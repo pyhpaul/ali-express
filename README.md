@@ -29,8 +29,17 @@ python -m ali_mvp scrape --keyword "women dress" --max-items 20 --enrich-detail-
 
 Outputs:
 
-- `data/products.csv`
-- `data/category_rank.csv`
+- `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/products.csv`
+- `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/category_rank.csv`
+
+For example, `--keyword "women dress"` writes to:
+
+```text
+data/women-dress/20260508_224530/products.csv
+data/women-dress/20260508_224530/category_rank.csv
+```
+
+URL-based runs are grouped under `data/url/<YYYYMMDD_HHMMSS>/`.
 
 ## Limitations
 

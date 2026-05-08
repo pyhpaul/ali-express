@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from urllib.parse import quote_plus
 
 from .browser import collect_raw_products
@@ -51,7 +52,8 @@ def run_scrape(args: argparse.Namespace) -> int:
     if args.detail_limit < 0:
         raise SystemExit("--detail-limit must be 0 or greater")
 
-    scraped_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    run_at = datetime.now().replace(microsecond=0)
+    scraped_at = run_at.astimezone(timezone.utc).isoformat()
     raw_products = collect_raw_products(
         url,
         args.max_items,
@@ -66,7 +68,7 @@ def run_scrape(args: argparse.Namespace) -> int:
         source_value=source_value,
         scraped_at=scraped_at,
     )
-    output_dir = Path(args.output_dir)
+    output_dir = build_output_dir(Path(args.output_dir), source_type=source_type, source_value=source_value, run_at=run_at)
     write_products_csv(output_dir / "products.csv", products)
     write_rank_csv(output_dir / "category_rank.csv", aggregate_rank(products))
 
@@ -82,3 +84,16 @@ def run_scrape(args: argparse.Namespace) -> int:
 
 def _build_search_url(keyword: str) -> str:
     return f"https://www.aliexpress.com/wholesale?SearchText={quote_plus(keyword)}"
+
+
+def build_output_dir(base_dir: Path, *, source_type: str, source_value: str, run_at: datetime) -> Path:
+    source_slug = _source_slug(source_type, source_value)
+    timestamp = run_at.strftime("%Y%m%d_%H%M%S")
+    return base_dir / source_slug / timestamp
+
+
+def _source_slug(source_type: str, source_value: str) -> str:
+    if source_type == "url":
+        return "url"
+    slug = re.sub(r"[^a-z0-9]+", "-", source_value.lower()).strip("-")
+    return slug or "keyword"
