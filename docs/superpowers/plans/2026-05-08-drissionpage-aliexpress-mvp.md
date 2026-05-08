@@ -171,7 +171,7 @@ def test_aggregate_rank_groups_by_source_and_scores_heat():
     assert row.total_sold_count == 300
     assert row.avg_rating == 4.7
     assert row.avg_review_count == 30.0
-    assert row.heat_score == 377.0
+    assert row.heat_score == 427.0
 ```
 
 - [ ] **Step 2: Verify tests fail**
@@ -832,4 +832,3 @@ Expected:
 - CLI reports the number of raw and normalized products.
 
 If this returns 2 with no products, inspect the opened page for login prompts, CAPTCHA, region dialogs, or changed listing markup.
-
