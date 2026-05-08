@@ -8,6 +8,24 @@ from DrissionPage import ChromiumOptions, ChromiumPage
 
 PRODUCT_SCRIPT = r"""
 return (() => {
+  function isPriceLine(line) {
+    return /[$€£¥]|US\s*\$|\d+[,.]\d{2}/i.test(line);
+  }
+
+  function isSoldLine(line) {
+    return /sold|orders|已售|售出/i.test(line);
+  }
+
+  function findRatingLine(lines) {
+    const soldIndex = lines.findIndex(line => isSoldLine(line));
+    const end = soldIndex >= 0 ? soldIndex : lines.length;
+    const candidates = lines.slice(0, end).filter((line) => {
+      if (isPriceLine(line) || /%|off|save|shipping|interest/i.test(line)) return false;
+      return /^[1-5](?:\.\d)?$/.test(line);
+    });
+    return candidates.length ? candidates[candidates.length - 1] : '';
+  }
+
   const cards = Array.from(document.querySelectorAll('a[href*="/item/"], a[href*="item/"]'));
   const results = [];
   const seen = new Set();
@@ -19,16 +37,15 @@ return (() => {
     const text = (card.innerText || link.innerText || '').trim();
     const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
     const img = card.querySelector('img') || link.querySelector('img');
-    const priceLine = lines.find(line => /[$€£¥]|US\s*\$|\d+[,.]\d{2}/i.test(line)) || '';
-    const soldLine = lines.find(line => /sold|orders|已售|售出/i.test(line)) || '';
-    const ratingLine = lines.find(line => /\b[1-5](?:\.\d)?\b/.test(line) && /star|rating|reviews?|评价|评星/i.test(line)) || '';
+    const priceLine = lines.find(line => isPriceLine(line)) || '';
+    const soldLine = lines.find(line => isSoldLine(line)) || '';
     const reviewLine = lines.find(line => /reviews?|评价/i.test(line)) || '';
     const title = (img && (img.alt || img.title)) || lines.find(line => line.length > 12) || link.textContent || '';
     results.push({
       title,
       price: priceLine,
       soldText: soldLine,
-      ratingText: ratingLine,
+      ratingText: findRatingLine(lines),
       reviewText: reviewLine,
       url,
       image: img ? (img.src || img.getAttribute('data-src') || '') : ''
@@ -45,6 +62,8 @@ def collect_raw_products(
     scroll_rounds: int = 8,
     user_data_dir: str | None = None,
     port: int | None = None,
+    enrich_detail_rating: bool = False,
+    detail_limit: int = 5,
 ) -> list[dict[str, object]]:
     page = ChromiumPage(_build_options(user_data_dir=user_data_dir, port=port))
     page.get(url)
@@ -54,11 +73,72 @@ def collect_raw_products(
         time.sleep(1)
         raw = page.run_js(PRODUCT_SCRIPT)
         if isinstance(raw, list) and len(raw) >= max_items:
-            return raw[:max_items]
+            return _finalize_products(
+                page,
+                raw,
+                max_items=max_items,
+                enrich_detail_rating=enrich_detail_rating,
+                detail_limit=detail_limit,
+            )
     raw = page.run_js(PRODUCT_SCRIPT)
     if not isinstance(raw, list):
         return []
-    return raw[:max_items]
+    return _finalize_products(
+        page,
+        raw,
+        max_items=max_items,
+        enrich_detail_rating=enrich_detail_rating,
+        detail_limit=detail_limit,
+    )
+
+
+def _finalize_products(
+    page: ChromiumPage,
+    raw: list[dict[str, object]],
+    *,
+    max_items: int,
+    enrich_detail_rating: bool,
+    detail_limit: int,
+) -> list[dict[str, object]]:
+    products = raw[:max_items]
+    if enrich_detail_rating:
+        _enrich_detail_ratings(page, products, detail_limit)
+    return products
+
+
+DETAIL_RATING_SCRIPT = r"""
+return (() => {
+  const text = document.body ? document.body.innerText : '';
+  const match = text.match(/\b([1-5](?:\.\d)?)\s*(?:stars?|out of 5|rating|评价|评星)\b/i);
+  if (match) return match[1];
+  const ratingNode = document.querySelector('[class*="rating"], [class*="star"], [aria-label*="star"], [aria-label*="rating"]');
+  return ratingNode ? (ratingNode.innerText || ratingNode.getAttribute('aria-label') || '') : '';
+})()
+"""
+
+
+def _enrich_detail_ratings(page: ChromiumPage, products: list[dict[str, object]], detail_limit: int) -> None:
+    enriched = 0
+    listing_url = page.url
+    for product in products:
+        if enriched >= detail_limit:
+            break
+        if product.get("ratingText"):
+            continue
+        url = str(product.get("url") or "")
+        if not url:
+            continue
+        try:
+            page.get(url)
+            time.sleep(2)
+            rating = page.run_js(DETAIL_RATING_SCRIPT)
+        except Exception:
+            rating = ""
+        if rating:
+            product["ratingText"] = rating
+        enriched += 1
+    if listing_url:
+        page.get(listing_url)
 
 
 def _build_options(user_data_dir: str | None, port: int | None) -> ChromiumOptions:

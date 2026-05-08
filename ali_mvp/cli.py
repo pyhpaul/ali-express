@@ -26,6 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Persistent Chromium profile directory for manual AliExpress login.",
     )
     scrape.add_argument("--port", type=int, default=9333, help="Local Chromium remote debugging port.")
+    scrape.add_argument(
+        "--enrich-detail-rating",
+        action="store_true",
+        help="Visit a bounded number of product detail pages to fill missing ratings.",
+    )
+    scrape.add_argument("--detail-limit", type=int, default=5, help="Maximum detail pages to visit for rating enrichment.")
     scrape.set_defaults(func=run_scrape)
     return parser
 
@@ -42,6 +48,8 @@ def run_scrape(args: argparse.Namespace) -> int:
     url = _build_search_url(args.keyword) if args.keyword else args.url
     if args.max_items < 1:
         raise SystemExit("--max-items must be greater than 0")
+    if args.detail_limit < 0:
+        raise SystemExit("--detail-limit must be 0 or greater")
 
     scraped_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     raw_products = collect_raw_products(
@@ -49,6 +57,8 @@ def run_scrape(args: argparse.Namespace) -> int:
         args.max_items,
         user_data_dir=args.user_data_dir,
         port=args.port,
+        enrich_detail_rating=args.enrich_detail_rating,
+        detail_limit=args.detail_limit,
     )
     products = normalize_products(
         raw_products,

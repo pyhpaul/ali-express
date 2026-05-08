@@ -21,6 +21,12 @@ python -m ali_mvp scrape --keyword "women dress" --max-items 80
 python -m ali_mvp scrape --url "https://www.aliexpress.com/..." --max-items 80
 ```
 
+Optional detail-page rating enrichment:
+
+```bash
+python -m ali_mvp scrape --keyword "women dress" --max-items 20 --enrich-detail-rating --detail-limit 5
+```
+
 Outputs:
 
 - `data/products.csv`
