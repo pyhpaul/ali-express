@@ -7,7 +7,7 @@ from DrissionPage import ChromiumOptions, ChromiumPage
 
 
 PRODUCT_SCRIPT = r"""
-(() => {
+return (() => {
   const cards = Array.from(document.querySelectorAll('a[href*="/item/"], a[href*="item/"]'));
   const results = [];
   const seen = new Set();
