@@ -28,3 +28,13 @@ Outputs:
 ## Limitations
 
 This MVP is for low-frequency validation. It does not handle proxy pools, CAPTCHA solving, account pools, checkout, or official AliExpress API access.
+
+## Manual Validation
+
+After logging in, run:
+
+```bash
+python -m ali_mvp scrape --keyword "women dress" --max-items 20
+```
+
+If no products are extracted, open the browser window and check for region selection, CAPTCHA, cookie banners, or page layout changes.
