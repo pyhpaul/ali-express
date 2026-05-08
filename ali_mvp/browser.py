@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
-from DrissionPage import ChromiumPage
+from DrissionPage import ChromiumOptions, ChromiumPage
 
 
 PRODUCT_SCRIPT = r"""
@@ -38,8 +39,14 @@ PRODUCT_SCRIPT = r"""
 """
 
 
-def collect_raw_products(url: str, max_items: int, scroll_rounds: int = 8) -> list[dict[str, object]]:
-    page = ChromiumPage()
+def collect_raw_products(
+    url: str,
+    max_items: int,
+    scroll_rounds: int = 8,
+    user_data_dir: str | None = None,
+    port: int | None = None,
+) -> list[dict[str, object]]:
+    page = ChromiumPage(_build_options(user_data_dir=user_data_dir, port=port))
     page.get(url)
     time.sleep(3)
     for _ in range(scroll_rounds):
@@ -52,3 +59,12 @@ def collect_raw_products(url: str, max_items: int, scroll_rounds: int = 8) -> li
     if not isinstance(raw, list):
         return []
     return raw[:max_items]
+
+
+def _build_options(user_data_dir: str | None, port: int | None) -> ChromiumOptions:
+    options = ChromiumOptions()
+    if port is not None:
+        options.set_local_port(port)
+    if user_data_dir:
+        options.set_user_data_path(str(Path(user_data_dir).resolve()))
+    return options

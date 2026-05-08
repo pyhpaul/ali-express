@@ -20,6 +20,12 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--url", help="AliExpress listing or search URL.")
     scrape.add_argument("--max-items", type=int, default=80)
     scrape.add_argument("--output-dir", default="data")
+    scrape.add_argument(
+        "--user-data-dir",
+        default=".browser-profile",
+        help="Persistent Chromium profile directory for manual AliExpress login.",
+    )
+    scrape.add_argument("--port", type=int, default=9333, help="Local Chromium remote debugging port.")
     scrape.set_defaults(func=run_scrape)
     return parser
 
@@ -38,7 +44,12 @@ def run_scrape(args: argparse.Namespace) -> int:
         raise SystemExit("--max-items must be greater than 0")
 
     scraped_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    raw_products = collect_raw_products(url, args.max_items)
+    raw_products = collect_raw_products(
+        url,
+        args.max_items,
+        user_data_dir=args.user_data_dir,
+        port=args.port,
+    )
     products = normalize_products(
         raw_products,
         source_type=source_type,

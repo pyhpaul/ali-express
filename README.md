@@ -12,6 +12,7 @@ python -m venv .venv
 ## Login
 
 Open AliExpress in the browser profile used by DrissionPage and log in manually before scraping.
+By default the MVP stores that profile in `.browser-profile` and uses local port `9333`, avoiding conflicts with other Chrome debugging sessions.
 
 ## Usage
 
