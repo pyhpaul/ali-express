@@ -56,3 +56,42 @@ def test_build_output_dir_groups_url_runs_under_url_slug():
     path = build_output_dir(Path("data"), source_type="url", source_value="https://example.test/x", run_at=run_at)
 
     assert path == Path("data") / "url" / "20260508_224530"
+
+
+def test_scrape_parser_accepts_category_url_source():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "--category-url",
+            "https://www.aliexpress.com/category/100003109/women-clothing.html",
+        ]
+    )
+
+    assert args.category_url == "https://www.aliexpress.com/category/100003109/women-clothing.html"
+
+
+def test_build_output_dir_groups_category_url_by_category_slug():
+    run_at = datetime(2026, 5, 8, 22, 45, 30)
+
+    path = build_output_dir(
+        Path("data"),
+        source_type="category",
+        source_value="https://www.aliexpress.com/category/100003109/women-clothing.html",
+        run_at=run_at,
+    )
+
+    assert path == Path("data") / "category-women-clothing" / "20260508_224530"
+
+
+def test_build_output_dir_falls_back_for_category_url_without_slug():
+    run_at = datetime(2026, 5, 8, 22, 45, 30)
+
+    path = build_output_dir(
+        Path("data"),
+        source_type="category",
+        source_value="https://www.aliexpress.com/category/",
+        run_at=run_at,
+    )
+
+    assert path == Path("data") / "category" / "20260508_224530"

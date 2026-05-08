@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import re
 from urllib.parse import quote_plus
+from urllib.parse import urlparse
 
 from .browser import collect_raw_products
 from .extractor import normalize_products
@@ -19,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     source = scrape.add_mutually_exclusive_group(required=True)
     source.add_argument("--keyword", help="AliExpress search keyword.")
     source.add_argument("--url", help="AliExpress listing or search URL.")
+    source.add_argument("--category-url", help="AliExpress category URL.")
     scrape.add_argument("--max-items", type=int, default=80)
     scrape.add_argument("--output-dir", default="data")
     scrape.add_argument(
@@ -44,9 +46,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_scrape(args: argparse.Namespace) -> int:
-    source_type = "keyword" if args.keyword else "url"
-    source_value = args.keyword or args.url
-    url = _build_search_url(args.keyword) if args.keyword else args.url
+    source_type, source_value, url = _resolve_source(args)
     if args.max_items < 1:
         raise SystemExit("--max-items must be greater than 0")
     if args.detail_limit < 0:
@@ -86,6 +86,14 @@ def _build_search_url(keyword: str) -> str:
     return f"https://www.aliexpress.com/wholesale?SearchText={quote_plus(keyword)}"
 
 
+def _resolve_source(args: argparse.Namespace) -> tuple[str, str, str]:
+    if args.keyword:
+        return "keyword", args.keyword, _build_search_url(args.keyword)
+    if args.category_url:
+        return "category", args.category_url, args.category_url
+    return "url", args.url, args.url
+
+
 def build_output_dir(base_dir: Path, *, source_type: str, source_value: str, run_at: datetime) -> Path:
     source_slug = _source_slug(source_type, source_value)
     timestamp = run_at.strftime("%Y%m%d_%H%M%S")
@@ -95,5 +103,20 @@ def build_output_dir(base_dir: Path, *, source_type: str, source_value: str, run
 def _source_slug(source_type: str, source_value: str) -> str:
     if source_type == "url":
         return "url"
+    if source_type == "category":
+        return _category_slug(source_value)
     slug = re.sub(r"[^a-z0-9]+", "-", source_value.lower()).strip("-")
     return slug or "keyword"
+
+
+def _category_slug(category_url: str) -> str:
+    path_parts = [part for part in urlparse(category_url).path.split("/") if part]
+    if not path_parts:
+        return "category"
+    candidate = path_parts[-1]
+    if candidate.endswith(".html"):
+        candidate = candidate[:-5]
+    slug = re.sub(r"[^a-z0-9]+", "-", candidate.lower()).strip("-")
+    if not slug or slug.isdigit() or slug == "category":
+        return "category"
+    return f"category-{slug}"

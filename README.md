@@ -19,6 +19,7 @@ By default the MVP stores that profile in `.browser-profile` and uses local port
 ```bash
 python -m ali_mvp scrape --keyword "women dress" --max-items 80
 python -m ali_mvp scrape --url "https://www.aliexpress.com/..." --max-items 80
+python -m ali_mvp scrape --category-url "https://www.aliexpress.com/category/100003109/women-clothing.html" --max-items 80
 ```
 
 Optional detail-page rating enrichment:
@@ -40,6 +41,13 @@ data/women-dress/20260508_224530/category_rank.csv
 ```
 
 URL-based runs are grouped under `data/url/<YYYYMMDD_HHMMSS>/`.
+
+Category URL runs are grouped by the category slug when the URL exposes one:
+
+```text
+data/category-women-clothing/20260508_224530/products.csv
+data/category-women-clothing/20260508_224530/category_rank.csv
+```
 
 ## Limitations
 
