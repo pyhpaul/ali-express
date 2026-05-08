@@ -1,0 +1,30 @@
+# AliExpress DrissionPage MVP
+
+Local MVP for validating AliExpress product-selection logic without an AliExpress API key.
+
+## Setup
+
+```bash
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+```
+
+## Login
+
+Open AliExpress in the browser profile used by DrissionPage and log in manually before scraping.
+
+## Usage
+
+```bash
+python -m ali_mvp scrape --keyword "women dress" --max-items 80
+python -m ali_mvp scrape --url "https://www.aliexpress.com/..." --max-items 80
+```
+
+Outputs:
+
+- `data/products.csv`
+- `data/category_rank.csv`
+
+## Limitations
+
+This MVP is for low-frequency validation. It does not handle proxy pools, CAPTCHA solving, account pools, checkout, or official AliExpress API access.
