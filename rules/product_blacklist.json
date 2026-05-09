@@ -1,13 +1,20 @@
 {
-  "version": 1,
+  "version": 2,
   "groups": [
     {
       "name": "electrical_power",
-      "terms": ["battery", "lithium battery", "rechargeable", "charger", "power bank"]
+      "pre_reject_terms": ["charger", "power adapter", "power bank"],
+      "post_reject_terms": ["battery", "rechargeable", "charger", "power adapter", "power bank", "power supply"]
+    },
+    {
+      "name": "relay_switch_sensor",
+      "pre_reject_terms": ["remote control socket", "gsm gate opener", "relay module"],
+      "post_reject_terms": ["relay module", "smart switch", "wifi switch", "zigbee switch", "sensor", "controller"]
     },
     {
       "name": "chip_pcb",
-      "terms": ["chip", "ic", "integrated circuit", "pcb", "pcba", "circuit board", "motherboard"]
+      "pre_reject_terms": ["integrated circuit", "circuit board"],
+      "post_reject_terms": ["chip", "ic", "integrated circuit", "pcb", "pcba", "circuit board", "motherboard"]
     }
   ]
 }

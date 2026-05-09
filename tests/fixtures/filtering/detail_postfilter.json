@@ -1,0 +1,16 @@
+[
+  {
+    "title": "Washing machine anti-vibration stand",
+    "product_url": "https://example.test/item/2001.html",
+    "attributes_text": "",
+    "breadcrumb": "Home > Appliance Parts",
+    "description_text": "Compatible with battery powered washers and large appliances."
+  },
+  {
+    "title": "Dryer timer replacement housing",
+    "product_url": "https://example.test/item/2002.html",
+    "attributes_text": "{\"Control\":\"relay module\",\"Voltage\":\"220V\"}",
+    "breadcrumb": "Home > Appliance Parts",
+    "description_text": "Replacement housing for dryer timing assembly."
+  }
+]
