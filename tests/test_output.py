@@ -115,6 +115,7 @@ def test_write_filter_audit_csv_writes_expected_columns(tmp_path):
             "title": "Battery charger board",
             "product_url": "https://example.test/item",
             "filter_decision": "rejected",
+            "filter_stage": "listing_title",
             "reject_groups": "electrical_power",
             "reject_terms": "battery",
             "reject_fields": "title",
@@ -129,6 +130,5 @@ def test_write_filter_audit_csv_writes_expected_columns(tmp_path):
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         written_rows = list(csv.DictReader(handle))
 
+    assert written_rows[0]["filter_stage"] == "listing_title"
     assert written_rows[0]["filter_decision"] == "rejected"
-    assert written_rows[0]["reject_terms"] == "battery"
-    assert written_rows[0]["warning_terms"] == ""

@@ -85,12 +85,21 @@ data/category-women-clothing/20260508_224530/category_rank.csv
 
 Blacklist filtering semantics:
 
+- When blacklist filtering is enabled, `--max-items` means final accepted product count.
+- The scraper first runs a listing-title prefilter and skips detail-page visits for obvious blacklist hits.
+- Remaining products can still be rejected after detail enrichment from `title` and `attributes_text`.
+- `breadcrumb` and `description_text` only create warnings.
 - `products.csv` only contains accepted products.
-- `products_filter_audit.csv` contains all products and records reject / warning reasons.
-- Matching is field-layered:
-  - `title` and `attributes_text` can reject directly.
-  - `breadcrumb` and `description_text` only create warnings.
-- This lowers false positives for accessory-like products whose descriptions mention appliances without the product itself being electrical or chip-based.
+- `products_filter_audit.csv` contains all accepted/rejected decisions that were kept for the run and adds `filter_stage`:
+  - `listing_title`
+  - `detail_post_enrich`
+  - `accepted`
+
+Local-first verification before any live-site validation:
+
+```bash
+python -m pytest tests/test_filtering.py tests/test_cli.py tests/test_output.py tests/test_browser.py -q
+```
 
 ## Output Files and Code Map
 
