@@ -7,9 +7,16 @@ import re
 from urllib.parse import quote_plus
 from urllib.parse import urlparse
 
-from .browser import collect_raw_products
+from .browser import (
+    advance_listing_page,
+    collect_listing_page_products,
+    collect_raw_products,
+    dedupe_listing_products,
+    enrich_listing_products,
+    open_listing_page,
+)
 from .extractor import normalize_products
-from .filtering import filter_products, load_filter_groups
+from .filtering import FilterGroup, filter_products, load_filter_groups, prefilter_listing_products
 from .output import write_filter_audit_csv, write_products_csv, write_rank_csv
 from .scoring import aggregate_rank
 
@@ -61,6 +68,70 @@ def main(argv: list[str] | None = None) -> int:
     return args.func(args)
 
 
+def _collect_products_with_blacklist(
+    *,
+    url: str,
+    max_items: int,
+    source_type: str,
+    source_value: str,
+    scraped_at: str,
+    groups: list[FilterGroup],
+    user_data_dir: str,
+    port: int,
+    enrich_detail: bool,
+    pages: int | None,
+) -> tuple[list[object], list[dict[str, str]]]:
+    page = open_listing_page(url, user_data_dir=user_data_dir, port=port)
+    accepted_products = []
+    audit_rows: list[dict[str, str]] = []
+    seen_keys: set[str] = set()
+    current_page = 1
+
+    while len(accepted_products) < max_items:
+        current_raw = collect_listing_page_products(page)
+        page_products = dedupe_listing_products(current_raw, seen_keys)
+        listing_survivors, listing_audit = prefilter_listing_products(
+            page_products,
+            groups,
+            source_type=source_type,
+            source_value=source_value,
+        )
+        audit_rows.extend(listing_audit)
+
+        if enrich_detail and listing_survivors:
+            enrich_listing_products(page, listing_survivors)
+
+        normalized = normalize_products(
+            listing_survivors,
+            source_type=source_type,
+            source_value=source_value,
+            scraped_at=scraped_at,
+        )
+        page_accepted, page_audit = filter_products(normalized, groups)
+
+        remaining = max_items - len(accepted_products)
+        accepted_products.extend(page_accepted[:remaining])
+
+        accepted_audit_count = 0
+        for row in page_audit:
+            if row["filter_decision"] == "accepted":
+                if accepted_audit_count >= remaining:
+                    continue
+                accepted_audit_count += 1
+            audit_rows.append(row)
+
+        if len(accepted_products) >= max_items:
+            break
+        if pages is not None and current_page >= pages:
+            break
+        next_page = current_page + 1
+        if not advance_listing_page(page, next_page):
+            break
+        current_page = next_page
+
+    return accepted_products, audit_rows
+
+
 def run_scrape(args: argparse.Namespace) -> int:
     source_type, source_value, url = _resolve_source(args)
     if args.max_items < 1:
@@ -70,29 +141,49 @@ def run_scrape(args: argparse.Namespace) -> int:
 
     run_at = datetime.now().replace(microsecond=0)
     scraped_at = run_at.astimezone(timezone.utc).isoformat()
-    raw_products = collect_raw_products(
-        url,
-        args.max_items,
-        user_data_dir=args.user_data_dir,
-        port=args.port,
-        enrich_detail=args.enrich_detail,
-        pages=args.pages,
-    )
-    products = normalize_products(
-        raw_products,
-        source_type=source_type,
-        source_value=source_value,
-        scraped_at=scraped_at,
-    )
     groups = load_filter_groups(args.blacklist_file, args.reject_keyword)
-    accepted_products, audit_rows = filter_products(products, groups)
+
+    if groups:
+        accepted_products, audit_rows = _collect_products_with_blacklist(
+            url=url,
+            max_items=args.max_items,
+            source_type=source_type,
+            source_value=source_value,
+            scraped_at=scraped_at,
+            groups=groups,
+            user_data_dir=args.user_data_dir,
+            port=args.port,
+            enrich_detail=args.enrich_detail,
+            pages=args.pages,
+        )
+        raw_products_count = len(audit_rows)
+        normalized_count = len(audit_rows)
+    else:
+        raw_products = collect_raw_products(
+            url,
+            args.max_items,
+            user_data_dir=args.user_data_dir,
+            port=args.port,
+            enrich_detail=args.enrich_detail,
+            pages=args.pages,
+        )
+        products = normalize_products(
+            raw_products,
+            source_type=source_type,
+            source_value=source_value,
+            scraped_at=scraped_at,
+        )
+        accepted_products, audit_rows = filter_products(products, groups)
+        raw_products_count = len(raw_products)
+        normalized_count = len(products)
+
     output_dir = build_output_dir(Path(args.output_dir), source_type=source_type, source_value=source_value, run_at=run_at)
     write_products_csv(output_dir / "products.csv", accepted_products)
     write_filter_audit_csv(output_dir / "products_filter_audit.csv", audit_rows)
     write_rank_csv(output_dir / "category_rank.csv", aggregate_rank(accepted_products))
 
-    print(f"Scraped raw items: {len(raw_products)}")
-    print(f"Normalized products: {len(products)}")
+    print(f"Scraped raw items: {raw_products_count}")
+    print(f"Normalized products: {normalized_count}")
     print(f"Accepted products: {len(accepted_products)}")
     print(f"Wrote: {output_dir / 'products.csv'}")
     print(f"Wrote: {output_dir / 'products_filter_audit.csv'}")

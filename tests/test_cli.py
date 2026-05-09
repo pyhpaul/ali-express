@@ -1,4 +1,5 @@
 import argparse
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
@@ -179,6 +180,153 @@ def test_run_scrape_filters_products_before_writing_outputs(monkeypatch, tmp_pat
     assert code == 2
     assert captured["products"] == []
     assert captured["audit"][0]["filter_decision"] == "rejected"
+
+
+def test_run_scrape_with_blacklist_reaches_accept_target_from_local_page_replay(monkeypatch, tmp_path):
+    from ali_mvp import cli
+
+    pages = [
+        [
+            {"title": "Portable battery charger board", "url": "https://example.test/item/3001.html"},
+            {"title": "Washing machine anti-vibration stand", "url": "https://example.test/item/3002.html"},
+        ],
+        [
+            {"title": "Dryer timer replacement housing", "url": "https://example.test/item/3003.html"},
+            {"title": "Shock pad support foot", "url": "https://example.test/item/3004.html"},
+        ],
+    ]
+    page_index = {"value": 0}
+    captured: dict[str, list[object]] = {}
+
+    args = argparse.Namespace(
+        keyword="home appliance accessories",
+        url=None,
+        category_url=None,
+        max_items=2,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=True,
+        pages=None,
+        blacklist_file="rules/product_blacklist.json",
+        reject_keyword=[],
+    )
+
+    class FakePage:
+        url = "https://www.aliexpress.com/wholesale?SearchText=home+appliance+accessories"
+
+    monkeypatch.setattr(cli, "open_listing_page", lambda *a, **k: FakePage())
+    monkeypatch.setattr(
+        cli,
+        "collect_listing_page_products",
+        lambda page, scroll_rounds=8: deepcopy(pages[page_index["value"]]),
+    )
+    monkeypatch.setattr(cli, "dedupe_listing_products", lambda products, seen_keys: products)
+
+    def fake_advance(page, target_page):
+        if page_index["value"] >= len(pages) - 1:
+            return False
+        page_index["value"] += 1
+        return True
+
+    monkeypatch.setattr(cli, "advance_listing_page", fake_advance)
+
+    def fake_enrich(page, products):
+        for product in products:
+            if product["title"] == "Dryer timer replacement housing":
+                product["attributesText"] = '{"Control":"relay module"}'
+            if product["title"] == "Washing machine anti-vibration stand":
+                product["descriptionText"] = "Compatible with battery powered washers."
+
+    monkeypatch.setattr(cli, "enrich_listing_products", fake_enrich)
+    monkeypatch.setattr(
+        cli,
+        "load_filter_groups",
+        lambda path, keywords: [
+            cli.FilterGroup(
+                name="electrical_power",
+                pre_reject_terms=("charger",),
+                post_reject_terms=("battery",),
+            ),
+            cli.FilterGroup(
+                name="relay_switch_sensor",
+                pre_reject_terms=(),
+                post_reject_terms=("relay module",),
+            ),
+        ],
+    )
+    monkeypatch.setattr(cli, "write_products_csv", lambda path, products: captured.setdefault("products", list(products)))
+    monkeypatch.setattr(cli, "write_rank_csv", lambda path, rows: captured.setdefault("rank", list(rows)))
+    monkeypatch.setattr(cli, "write_filter_audit_csv", lambda path, rows: captured.setdefault("audit", list(rows)))
+
+    code = cli.run_scrape(args)
+
+    assert code == 0
+    assert [product.title for product in captured["products"]] == [
+        "Washing machine anti-vibration stand",
+        "Shock pad support foot",
+    ]
+    assert [row["filter_stage"] for row in captured["audit"]] == [
+        "listing_title",
+        "accepted",
+        "detail_post_enrich",
+        "accepted",
+    ]
+
+
+def test_run_scrape_with_blacklist_respects_pages_cap_when_accept_target_is_not_met(monkeypatch, tmp_path):
+    from ali_mvp import cli
+
+    args = argparse.Namespace(
+        keyword="home appliance accessories",
+        url=None,
+        category_url=None,
+        max_items=2,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        pages=1,
+        blacklist_file="rules/product_blacklist.json",
+        reject_keyword=[],
+    )
+
+    class FakePage:
+        url = "https://www.aliexpress.com/wholesale?SearchText=home+appliance+accessories"
+
+    captured: dict[str, list[object]] = {}
+    monkeypatch.setattr(cli, "open_listing_page", lambda *a, **k: FakePage())
+    monkeypatch.setattr(
+        cli,
+        "collect_listing_page_products",
+        lambda page, scroll_rounds=8: [
+            {"title": "Portable battery charger board", "url": "https://example.test/item/3001.html"},
+            {"title": "Washing machine anti-vibration stand", "url": "https://example.test/item/3002.html"},
+        ],
+    )
+    monkeypatch.setattr(cli, "dedupe_listing_products", lambda products, seen_keys: products)
+    monkeypatch.setattr(cli, "advance_listing_page", lambda page, target_page: False)
+    monkeypatch.setattr(cli, "enrich_listing_products", lambda page, products: None)
+    monkeypatch.setattr(
+        cli,
+        "load_filter_groups",
+        lambda path, keywords: [
+            cli.FilterGroup(
+                name="electrical_power",
+                pre_reject_terms=("charger",),
+                post_reject_terms=("battery",),
+            )
+        ],
+    )
+    monkeypatch.setattr(cli, "write_products_csv", lambda path, products: captured.setdefault("products", list(products)))
+    monkeypatch.setattr(cli, "write_rank_csv", lambda path, rows: captured.setdefault("rank", list(rows)))
+    monkeypatch.setattr(cli, "write_filter_audit_csv", lambda path, rows: captured.setdefault("audit", list(rows)))
+
+    code = cli.run_scrape(args)
+
+    assert code == 0
+    assert [product.title for product in captured["products"]] == ["Washing machine anti-vibration stand"]
+    assert len(captured["audit"]) == 2
 
 
 def test_build_output_dir_groups_keyword_runs_by_slug_and_timestamp():
