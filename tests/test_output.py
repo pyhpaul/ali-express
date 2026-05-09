@@ -1,6 +1,6 @@
 import csv
 
-from ali_mvp.output import write_products_csv, write_rank_csv
+from ali_mvp.output import write_filter_audit_csv, write_products_csv, write_rank_csv
 from ali_mvp.scoring import ProductRecord, RankRecord
 
 
@@ -104,3 +104,31 @@ def test_write_rank_csv_writes_header_and_rows(tmp_path):
         loaded = list(csv.DictReader(handle))
     assert loaded[0]["source_value"] == "women dress"
     assert loaded[0]["heat_score"] == "427.0"
+
+
+def test_write_filter_audit_csv_writes_expected_columns(tmp_path):
+    path = tmp_path / "products_filter_audit.csv"
+    rows = [
+        {
+            "source_type": "keyword",
+            "source_value": "home appliance accessories",
+            "title": "Battery charger board",
+            "product_url": "https://example.test/item",
+            "filter_decision": "rejected",
+            "reject_groups": "electrical_power",
+            "reject_terms": "battery",
+            "reject_fields": "title",
+            "warning_groups": "",
+            "warning_terms": "",
+            "warning_fields": "",
+        }
+    ]
+
+    write_filter_audit_csv(path, rows)
+
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        written_rows = list(csv.DictReader(handle))
+
+    assert written_rows[0]["filter_decision"] == "rejected"
+    assert written_rows[0]["reject_terms"] == "battery"
+    assert written_rows[0]["warning_terms"] == ""

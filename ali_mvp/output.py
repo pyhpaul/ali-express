@@ -43,6 +43,20 @@ RANK_FIELDS = [
     "heat_score",
 ]
 
+FILTER_AUDIT_FIELDS = [
+    "source_type",
+    "source_value",
+    "title",
+    "product_url",
+    "filter_decision",
+    "reject_groups",
+    "reject_terms",
+    "reject_fields",
+    "warning_groups",
+    "warning_terms",
+    "warning_fields",
+]
+
 
 def write_products_csv(path: Path, products: Iterable[ProductRecord]) -> None:
     _write_dataclass_csv(path, PRODUCT_FIELDS, products)
@@ -50,6 +64,15 @@ def write_products_csv(path: Path, products: Iterable[ProductRecord]) -> None:
 
 def write_rank_csv(path: Path, rows: Iterable[RankRecord]) -> None:
     _write_dataclass_csv(path, RANK_FIELDS, rows)
+
+
+def write_filter_audit_csv(path: Path, rows: Iterable[dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FILTER_AUDIT_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in FILTER_AUDIT_FIELDS})
 
 
 def _write_dataclass_csv(path: Path, fieldnames: list[str], rows: Iterable[object]) -> None:

@@ -36,6 +36,13 @@ Optional detail-page enrichment:
 python -m ali_mvp scrape --keyword "women dress" --max-items 20 --enrich-detail
 ```
 
+Optional product blacklist filtering:
+
+```bash
+python -m ali_mvp scrape --keyword "Home appliance accessories" --blacklist-file rules/product_blacklist.json
+python -m ali_mvp scrape --keyword "Home appliance accessories" --blacklist-file rules/product_blacklist.json --reject-keyword sensor --reject-keyword relay
+```
+
 Detail enrichment adds these columns to `products.csv`:
 
 - `entry_type`
@@ -55,12 +62,14 @@ Detail enrichment adds these columns to `products.csv`:
 Outputs:
 
 - `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/products.csv`
+- `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/products_filter_audit.csv`
 - `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/category_rank.csv`
 
 For example, `--keyword "women dress"` writes to:
 
 ```text
 data/women-dress/20260508_224530/products.csv
+data/women-dress/20260508_224530/products_filter_audit.csv
 data/women-dress/20260508_224530/category_rank.csv
 ```
 
@@ -70,8 +79,18 @@ Category URL runs are grouped by the category slug when the URL exposes one:
 
 ```text
 data/category-women-clothing/20260508_224530/products.csv
+data/category-women-clothing/20260508_224530/products_filter_audit.csv
 data/category-women-clothing/20260508_224530/category_rank.csv
 ```
+
+Blacklist filtering semantics:
+
+- `products.csv` only contains accepted products.
+- `products_filter_audit.csv` contains all products and records reject / warning reasons.
+- Matching is field-layered:
+  - `title` and `attributes_text` can reject directly.
+  - `breadcrumb` and `description_text` only create warnings.
+- This lowers false positives for accessory-like products whose descriptions mention appliances without the product itself being electrical or chip-based.
 
 ## Output Files and Code Map
 
@@ -125,6 +144,8 @@ Code locations:
 
 Purpose: source-level summary table. One row summarizes one scrape source, such as one keyword or one category URL. Use this file to compare whether a keyword/category is worth deeper analysis.
 
+This file is calculated from accepted products only when blacklist filtering is enabled.
+
 Columns:
 
 - `source_value`: keyword, category URL, or generic URL being summarized.
@@ -146,6 +167,31 @@ Code locations:
 - Aggregation and formula: `ali_mvp/scoring.py` -> `aggregate_rank()` and `_build_rank()`
 - CSV columns: `ali_mvp/output.py` -> `RANK_FIELDS`
 - CSV writer: `ali_mvp/output.py` -> `write_rank_csv()`
+- Output path and write call: `ali_mvp/cli.py` -> `run_scrape()`
+
+### `products_filter_audit.csv`
+
+Purpose: filtering audit table. One row corresponds to one normalized product, regardless of whether it is accepted or rejected.
+
+Columns:
+
+- `source_type`: scrape source type.
+- `source_value`: keyword, category URL, or generic URL used for this run.
+- `title`: product title.
+- `product_url`: resolved product detail URL.
+- `filter_decision`: `accepted` or `rejected`.
+- `reject_groups`: matched blacklist group names from strong fields.
+- `reject_terms`: matched blacklist terms from strong fields.
+- `reject_fields`: strong fields that triggered rejection.
+- `warning_groups`: matched blacklist group names from weak fields.
+- `warning_terms`: matched blacklist terms from weak fields.
+- `warning_fields`: weak fields that produced warnings.
+
+Code locations:
+
+- Filter engine: `ali_mvp/filtering.py`
+- CSV columns: `ali_mvp/output.py` -> `FILTER_AUDIT_FIELDS`
+- CSV writer: `ali_mvp/output.py` -> `write_filter_audit_csv()`
 - Output path and write call: `ali_mvp/cli.py` -> `run_scrape()`
 
 ## Limitations

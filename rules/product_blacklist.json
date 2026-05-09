@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "name": "electrical_power",
+      "terms": ["battery", "lithium battery", "rechargeable", "charger", "power bank"]
+    },
+    {
+      "name": "chip_pcb",
+      "terms": ["chip", "ic", "integrated circuit", "pcb", "pcba", "circuit board", "motherboard"]
+    }
+  ]
+}

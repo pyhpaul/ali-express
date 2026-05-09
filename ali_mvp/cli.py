@@ -9,7 +9,8 @@ from urllib.parse import urlparse
 
 from .browser import collect_raw_products
 from .extractor import normalize_products
-from .output import write_products_csv, write_rank_csv
+from .filtering import filter_products, load_filter_groups
+from .output import write_filter_audit_csv, write_products_csv, write_rank_csv
 from .scoring import aggregate_rank
 
 
@@ -39,6 +40,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Maximum listing pages to visit. Omit to auto-advance until --max-items is reached or no next page is available.",
+    )
+    scrape.add_argument(
+        "--blacklist-file",
+        help="Optional JSON blacklist file used to reject disallowed products before writing products.csv.",
+    )
+    scrape.add_argument(
+        "--reject-keyword",
+        action="append",
+        default=[],
+        help="Repeatable extra blacklist term added for this run.",
     )
     scrape.set_defaults(func=run_scrape)
     return parser
@@ -73,16 +84,21 @@ def run_scrape(args: argparse.Namespace) -> int:
         source_value=source_value,
         scraped_at=scraped_at,
     )
+    groups = load_filter_groups(args.blacklist_file, args.reject_keyword)
+    accepted_products, audit_rows = filter_products(products, groups)
     output_dir = build_output_dir(Path(args.output_dir), source_type=source_type, source_value=source_value, run_at=run_at)
-    write_products_csv(output_dir / "products.csv", products)
-    write_rank_csv(output_dir / "category_rank.csv", aggregate_rank(products))
+    write_products_csv(output_dir / "products.csv", accepted_products)
+    write_filter_audit_csv(output_dir / "products_filter_audit.csv", audit_rows)
+    write_rank_csv(output_dir / "category_rank.csv", aggregate_rank(accepted_products))
 
     print(f"Scraped raw items: {len(raw_products)}")
     print(f"Normalized products: {len(products)}")
+    print(f"Accepted products: {len(accepted_products)}")
     print(f"Wrote: {output_dir / 'products.csv'}")
+    print(f"Wrote: {output_dir / 'products_filter_audit.csv'}")
     print(f"Wrote: {output_dir / 'category_rank.csv'}")
-    if not products:
-        print("No products extracted. Check login state, region redirects, CAPTCHA, or page selector changes.")
+    if not accepted_products:
+        print("No accepted products extracted. Check login state, CAPTCHA, selector changes, or blacklist rules.")
         return 2
     return 0
 
