@@ -171,26 +171,20 @@ def collect_raw_products(
     enrich_detail: bool = False,
     pages: int | None = None,
 ) -> list[dict[str, object]]:
-    page = ChromiumPage(_build_options(user_data_dir=user_data_dir, port=port))
-    page.get(url)
-    time.sleep(3)
+    page = open_listing_page(url, user_data_dir=user_data_dir, port=port)
     all_products: list[dict[str, object]] = []
     seen_urls: set[str] = set()
     current_page = 1
 
     while True:
-        current_products = _collect_current_page(page, scroll_rounds=scroll_rounds)
-        for product in current_products:
-            product_key = _product_key(product)
-            if product_key and product_key not in seen_urls:
-                seen_urls.add(product_key)
-                all_products.append(product)
+        current_products = collect_listing_page_products(page, scroll_rounds=scroll_rounds)
+        all_products.extend(dedupe_listing_products(current_products, seen_urls))
         if len(all_products) >= max_items:
             break
         if pages is not None and current_page >= pages:
             break
         next_page = current_page + 1
-        if not _go_to_next_page(page, next_page):
+        if not advance_listing_page(page, next_page):
             break
         current_page = next_page
 
@@ -200,6 +194,43 @@ def collect_raw_products(
         max_items=max_items,
         enrich_detail=enrich_detail,
     )
+
+
+def open_listing_page(
+    url: str,
+    *,
+    user_data_dir: str | None = None,
+    port: int | None = None,
+) -> ChromiumPage:
+    page = ChromiumPage(_build_options(user_data_dir=user_data_dir, port=port))
+    page.get(url)
+    time.sleep(3)
+    return page
+
+
+def collect_listing_page_products(page: ChromiumPage, *, scroll_rounds: int = 8) -> list[dict[str, object]]:
+    return _collect_current_page(page, scroll_rounds=scroll_rounds)
+
+
+def dedupe_listing_products(
+    products: list[dict[str, object]],
+    seen_keys: set[str],
+) -> list[dict[str, object]]:
+    unique: list[dict[str, object]] = []
+    for product in products:
+        product_key = _product_key(product)
+        if product_key and product_key not in seen_keys:
+            seen_keys.add(product_key)
+            unique.append(product)
+    return unique
+
+
+def advance_listing_page(page: ChromiumPage, target_page: int) -> bool:
+    return _go_to_next_page(page, target_page)
+
+
+def enrich_listing_products(page: ChromiumPage, products: list[dict[str, object]]) -> None:
+    _enrich_product_details(page, products)
 
 
 def _collect_current_page(page: ChromiumPage, *, scroll_rounds: int) -> list[dict[str, object]]:
@@ -313,7 +344,7 @@ def _finalize_products(
 ) -> list[dict[str, object]]:
     products = raw[:max_items]
     if enrich_detail:
-        _enrich_product_details(page, products)
+        enrich_listing_products(page, products)
     return products
 
 

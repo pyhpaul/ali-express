@@ -61,6 +61,77 @@ def test_collect_raw_products_deduplicates_by_item_id():
     assert 'marker = "/item/"' in source
 
 
+def test_dedupe_listing_products_keeps_first_unique_product_key():
+    seen_keys: set[str] = set()
+    products = [
+        {"url": "https://www.aliexpress.com/item/1001.html"},
+        {"url": "https://www.aliexpress.com/item/1001.html"},
+        {"url": "https://www.aliexpress.com/item/1002.html"},
+    ]
+
+    unique = browser.dedupe_listing_products(products, seen_keys)
+
+    assert [item["url"] for item in unique] == [
+        "https://www.aliexpress.com/item/1001.html",
+        "https://www.aliexpress.com/item/1002.html",
+    ]
+
+
+def test_collect_listing_page_products_wraps_current_page_collection(monkeypatch):
+    class FakePage:
+        pass
+
+    monkeypatch.setattr(
+        browser,
+        "_collect_current_page",
+        lambda page, scroll_rounds=8: [{"url": "https://www.aliexpress.com/item/1001.html"}],
+    )
+
+    products = browser.collect_listing_page_products(FakePage(), scroll_rounds=3)
+
+    assert products == [{"url": "https://www.aliexpress.com/item/1001.html"}]
+
+
+def test_collect_raw_products_uses_public_browser_helpers(monkeypatch):
+    calls = {"open": 0, "collect": 0, "advance": 0, "enrich": 0}
+
+    class FakePage:
+        url = "https://www.aliexpress.com/wholesale?SearchText=women+dress"
+
+    monkeypatch.setattr(
+        browser,
+        "open_listing_page",
+        lambda url, user_data_dir=None, port=None: calls.__setitem__("open", calls["open"] + 1) or FakePage(),
+    )
+    monkeypatch.setattr(
+        browser,
+        "collect_listing_page_products",
+        lambda page, scroll_rounds=8: calls.__setitem__("collect", calls["collect"] + 1)
+        or [{"url": "https://www.aliexpress.com/item/1001.html"}],
+    )
+    monkeypatch.setattr(browser, "dedupe_listing_products", lambda products, seen_keys: products)
+    monkeypatch.setattr(
+        browser,
+        "advance_listing_page",
+        lambda page, target_page: calls.__setitem__("advance", calls["advance"] + 1) or False,
+    )
+    monkeypatch.setattr(
+        browser,
+        "enrich_listing_products",
+        lambda page, products: calls.__setitem__("enrich", calls["enrich"] + 1),
+    )
+
+    products = browser.collect_raw_products(
+        "https://www.aliexpress.com/wholesale?SearchText=women+dress",
+        max_items=1,
+        enrich_detail=True,
+        pages=1,
+    )
+
+    assert products == [{"url": "https://www.aliexpress.com/item/1001.html"}]
+    assert calls == {"open": 1, "collect": 1, "advance": 0, "enrich": 1}
+
+
 def test_prepare_listing_product_resolves_bundle_deals_entry_product():
     product = {
         "title": "shock pad",
