@@ -6,3 +6,4 @@ venv/
 data/
 *.csv
 .browser-profile/
+.worktrees/
