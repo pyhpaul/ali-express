@@ -19,7 +19,20 @@ class ProductRecord:
     rating: float
     review_count: int
     product_url: str
+    search_card_url: str
     image_url: str
+    entry_type: str
+    is_promoted: bool
+    promo_channel: str
+    promotion_text: str
+    promo_landing_url: str
+    shop_name: str
+    shipping_text: str
+    detail_rating: float
+    detail_review_count: int
+    breadcrumb: str
+    attributes_text: str
+    description_text: str
     scraped_at: str
 
 

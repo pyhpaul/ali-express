@@ -1,7 +1,17 @@
+import argparse
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from ali_mvp.cli import build_output_dir, build_parser
+
+
+def test_scrape_parser_defaults_pages_to_none():
+    parser = build_parser()
+    args = parser.parse_args(["scrape", "--keyword", "women dress"])
+
+    assert args.pages is None
 
 
 def test_scrape_parser_accepts_browser_profile_options():
@@ -25,21 +35,47 @@ def test_scrape_parser_accepts_browser_profile_options():
     assert args.port == 9333
 
 
-def test_scrape_parser_accepts_detail_rating_enrichment_options():
+def test_scrape_parser_accepts_pages_option():
     parser = build_parser()
-    args = parser.parse_args(
-        [
-            "scrape",
-            "--keyword",
-            "women dress",
-            "--enrich-detail-rating",
-            "--detail-limit",
-            "3",
-        ]
+    args = parser.parse_args(["scrape", "--keyword", "women dress", "--pages", "3"])
+
+    assert args.pages == 3
+
+
+def test_scrape_parser_accepts_enrich_detail_option():
+    parser = build_parser()
+    args = parser.parse_args(["scrape", "--keyword", "women dress", "--enrich-detail"])
+
+    assert args.enrich_detail is True
+
+
+def test_run_scrape_rejects_non_positive_pages():
+    from ali_mvp import cli
+
+    args = argparse.Namespace(
+        keyword="women dress",
+        url=None,
+        category_url=None,
+        max_items=20,
+        output_dir="data",
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        pages=0,
     )
 
-    assert args.enrich_detail_rating is True
-    assert args.detail_limit == 3
+    with pytest.raises(SystemExit, match="--pages must be greater than 0"):
+        cli.run_scrape(args)
+
+
+def test_scrape_parser_rejects_removed_detail_rating_flags():
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["scrape", "--keyword", "women dress", "--enrich-detail-rating"])
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["scrape", "--keyword", "women dress", "--detail-limit", "3"])
 
 
 def test_build_output_dir_groups_keyword_runs_by_slug_and_timestamp():

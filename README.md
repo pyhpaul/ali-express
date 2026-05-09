@@ -18,15 +18,39 @@ By default the MVP stores that profile in `.browser-profile` and uses local port
 
 ```bash
 python -m ali_mvp scrape --keyword "women dress" --max-items 80
+python -m ali_mvp scrape --keyword "women dress" --max-items 80 --pages 2
 python -m ali_mvp scrape --url "https://www.aliexpress.com/..." --max-items 80
 python -m ali_mvp scrape --category-url "https://www.aliexpress.com/category/100003109/women-clothing.html" --max-items 80
 ```
 
-Optional detail-page rating enrichment:
+Pagination semantics:
+
+- `--max-items` is the total number of products requested for the run.
+- `--pages` is an optional maximum page limit.
+- If `--pages` is omitted, the scraper auto-advances until `--max-items` is reached or no next page is available.
+- If you only want the first listing page, pass `--pages 1`.
+
+Optional detail-page enrichment:
 
 ```bash
-python -m ali_mvp scrape --keyword "women dress" --max-items 20 --enrich-detail-rating --detail-limit 5
+python -m ali_mvp scrape --keyword "women dress" --max-items 20 --enrich-detail
 ```
+
+Detail enrichment adds these columns to `products.csv`:
+
+- `entry_type`
+- `search_card_url`
+- `is_promoted`
+- `promo_channel`
+- `promotion_text`
+- `promo_landing_url`
+- `shop_name`
+- `shipping_text`
+- `detail_rating`
+- `detail_review_count`
+- `breadcrumb`
+- `attributes_text`
+- `description_text`
 
 Outputs:
 
@@ -64,9 +88,29 @@ Columns:
 - `sold_count`: parsed sold/order count.
 - `rating`: parsed product rating; `0.0` means the listing/detail page did not expose a reliable rating.
 - `review_count`: parsed review count; currently often `0` because AliExpress listing cards do not consistently expose it.
-- `product_url`: product detail URL.
+- `product_url`: resolved product detail URL. For promo cards, this is the resolved item URL.
+- `search_card_url`: original search-card URL before any promo resolution.
 - `image_url`: primary image URL.
+- `entry_type`: `item_card` for normal item cards, `promo_card` for `BundleDeals2 / Dollar Express` cards.
+- `is_promoted`: whether the row came through a promo landing flow.
+- `promo_channel`: promo channel name, such as `Dollar Express`.
+- `promotion_text`: flattened promo text such as `Free shipping on 3 items | Free returns | Buy more,save more`.
+- `promo_landing_url`: promo landing page URL for promo cards; empty for normal item cards.
+- `shop_name`: store name from the product detail page when `--enrich-detail` is enabled.
+- `shipping_text`: shipping-related text from the product detail page when available.
+- `detail_rating`: rating parsed from the product detail page.
+- `detail_review_count`: review count parsed from the product detail page.
+- `breadcrumb`: flattened breadcrumb text from the product detail page.
+- `attributes_text`: JSON string of detail-page attribute key/value pairs.
+- `description_text`: cleaned plain-text product description from the detail page.
 - `scraped_at`: UTC scrape timestamp.
+
+Promo-card behavior:
+
+- Search results may contain `Dollar Express / BundleDeals2` cards whose href is not `/item/...`.
+- The scraper keeps those rows as valid search hits when the card itself carries product content.
+- For promo rows, the scraper resolves the entry product's real `/item/<id>.html` URL and stores that in `product_url`.
+- The scraper does not expand all products inside the promo landing page; it only follows the entry product and preserves promo metadata.
 
 Code locations:
 

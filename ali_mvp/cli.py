@@ -30,11 +30,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scrape.add_argument("--port", type=int, default=9333, help="Local Chromium remote debugging port.")
     scrape.add_argument(
-        "--enrich-detail-rating",
+        "--enrich-detail",
         action="store_true",
-        help="Visit a bounded number of product detail pages to fill missing ratings.",
+        help="Visit each final product detail page and enrich products.csv with detail fields.",
     )
-    scrape.add_argument("--detail-limit", type=int, default=5, help="Maximum detail pages to visit for rating enrichment.")
+    scrape.add_argument(
+        "--pages",
+        type=int,
+        default=None,
+        help="Maximum listing pages to visit. Omit to auto-advance until --max-items is reached or no next page is available.",
+    )
     scrape.set_defaults(func=run_scrape)
     return parser
 
@@ -49,8 +54,8 @@ def run_scrape(args: argparse.Namespace) -> int:
     source_type, source_value, url = _resolve_source(args)
     if args.max_items < 1:
         raise SystemExit("--max-items must be greater than 0")
-    if args.detail_limit < 0:
-        raise SystemExit("--detail-limit must be 0 or greater")
+    if args.pages is not None and args.pages < 1:
+        raise SystemExit("--pages must be greater than 0")
 
     run_at = datetime.now().replace(microsecond=0)
     scraped_at = run_at.astimezone(timezone.utc).isoformat()
@@ -59,8 +64,8 @@ def run_scrape(args: argparse.Namespace) -> int:
         args.max_items,
         user_data_dir=args.user_data_dir,
         port=args.port,
-        enrich_detail_rating=args.enrich_detail_rating,
-        detail_limit=args.detail_limit,
+        enrich_detail=args.enrich_detail,
+        pages=args.pages,
     )
     products = normalize_products(
         raw_products,
