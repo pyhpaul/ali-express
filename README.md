@@ -180,7 +180,7 @@ Code locations:
 
 ### `products_filter_audit.csv`
 
-Purpose: filtering audit table. One row corresponds to one normalized product, regardless of whether it is accepted or rejected.
+Purpose: filtering audit table. This file records the accepted/rejected decisions kept for the current run, including rejected rows from the `listing_title` prefilter stage before detail enrichment. Because of that prefilter stage, rows do not only correspond to normalized products.
 
 Columns:
 
@@ -189,6 +189,10 @@ Columns:
 - `title`: product title.
 - `product_url`: resolved product detail URL.
 - `filter_decision`: `accepted` or `rejected`.
+- `filter_stage`: decision stage for the row:
+  - `listing_title`
+  - `detail_post_enrich`
+  - `accepted`
 - `reject_groups`: matched blacklist group names from strong fields.
 - `reject_terms`: matched blacklist terms from strong fields.
 - `reject_fields`: strong fields that triggered rejection.

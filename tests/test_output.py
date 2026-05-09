@@ -132,3 +132,5 @@ def test_write_filter_audit_csv_writes_expected_columns(tmp_path):
 
     assert written_rows[0]["filter_stage"] == "listing_title"
     assert written_rows[0]["filter_decision"] == "rejected"
+    assert written_rows[0]["reject_terms"] == "battery"
+    assert written_rows[0]["warning_terms"] == ""
