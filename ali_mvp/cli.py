@@ -80,16 +80,19 @@ def _collect_products_with_blacklist(
     port: int,
     enrich_detail: bool,
     pages: int | None,
-) -> tuple[list[object], list[dict[str, str]]]:
+) -> tuple[list[object], list[dict[str, str]], int, int]:
     page = open_listing_page(url, user_data_dir=user_data_dir, port=port)
     accepted_products = []
     audit_rows: list[dict[str, str]] = []
     seen_keys: set[str] = set()
     current_page = 1
+    raw_products_count = 0
+    normalized_count = 0
 
     while len(accepted_products) < max_items:
         current_raw = collect_listing_page_products(page)
         page_products = dedupe_listing_products(current_raw, seen_keys)
+        raw_products_count += len(page_products)
         listing_survivors, listing_audit = prefilter_listing_products(
             page_products,
             groups,
@@ -107,6 +110,7 @@ def _collect_products_with_blacklist(
             source_value=source_value,
             scraped_at=scraped_at,
         )
+        normalized_count += len(normalized)
         page_accepted, page_audit = filter_products(normalized, groups)
 
         remaining = max_items - len(accepted_products)
@@ -129,7 +133,7 @@ def _collect_products_with_blacklist(
             break
         current_page = next_page
 
-    return accepted_products, audit_rows
+    return accepted_products, audit_rows, raw_products_count, normalized_count
 
 
 def run_scrape(args: argparse.Namespace) -> int:
@@ -144,7 +148,7 @@ def run_scrape(args: argparse.Namespace) -> int:
     groups = load_filter_groups(args.blacklist_file, args.reject_keyword)
 
     if groups:
-        accepted_products, audit_rows = _collect_products_with_blacklist(
+        accepted_products, audit_rows, raw_products_count, normalized_count = _collect_products_with_blacklist(
             url=url,
             max_items=args.max_items,
             source_type=source_type,
@@ -156,8 +160,6 @@ def run_scrape(args: argparse.Namespace) -> int:
             enrich_detail=args.enrich_detail,
             pages=args.pages,
         )
-        raw_products_count = len(audit_rows)
-        normalized_count = len(audit_rows)
     else:
         raw_products = collect_raw_products(
             url,
