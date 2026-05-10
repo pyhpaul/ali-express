@@ -6,6 +6,7 @@ from ali_mvp.scoring import ProductRecord
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "filtering"
+REPO_BLACKLIST = Path("rules/product_blacklist.json")
 
 
 def _load_fixture(name: str) -> list[dict[str, object]]:
@@ -223,6 +224,39 @@ def test_load_filter_groups_supports_pre_post_and_legacy_terms(tmp_path):
     ]
 
 
+def test_load_filter_groups_supports_optional_require_terms(tmp_path):
+    path = tmp_path / "blacklist.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "groups": [
+                    {
+                        "name": "medical_therapy",
+                        "pre_reject_terms": ["massager"],
+                        "pre_require_terms": ["usb", "machine"],
+                        "post_reject_terms": ["massager"],
+                        "post_require_terms": ["usb", "machine"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    groups = load_filter_groups(path, [])
+
+    assert groups == [
+        FilterGroup(
+            name="medical_therapy",
+            pre_reject_terms=("massager",),
+            post_reject_terms=("massager",),
+            pre_require_terms=("usb", "machine"),
+            post_require_terms=("usb", "machine"),
+        ),
+    ]
+
+
 def test_prefilter_listing_products_rejects_clear_title_hits_from_local_fixture():
     raw_products = _load_fixture("listing_prefilter.json")
     groups = [
@@ -267,3 +301,183 @@ def test_filter_products_marks_detail_post_enrich_and_accepted_stage_from_local_
     assert audit_rows[1]["filter_decision"] == "rejected"
     assert audit_rows[1]["filter_stage"] == "detail_post_enrich"
     assert audit_rows[1]["reject_terms"] == "relay module"
+
+
+def test_repository_blacklist_prefilters_obvious_off_target_titles():
+    groups = load_filter_groups(REPO_BLACKLIST, [])
+    raw_products = [
+        {
+            "title": "1000 in 1 Universal Remote Control K 1028E AC Digital LCD for Air Conditioner",
+            "url": "https://example.test/remote",
+        },
+        {
+            "title": "1Pc Pulse Igniter 220-240V Gas Stove AC Pulse Igniter With Four Terminal Connections",
+            "url": "https://example.test/igniter",
+        },
+        {
+            "title": "Large Red Infrared Light Therapy Pad Capsule Portable Full Body Treatment for Home Use",
+            "url": "https://example.test/therapy",
+        },
+        {
+            "title": "3800W High Pressure High Temperature Steam Cleaner 220V for Home Appliance Cleaning",
+            "url": "https://example.test/cleaner",
+        },
+        {
+            "title": "Washing machine anti-vibration stand",
+            "url": "https://example.test/stand",
+        },
+    ]
+
+    survivors, audit_rows = prefilter_listing_products(
+        raw_products,
+        groups,
+        source_type="keyword",
+        source_value="home appliance accessories",
+    )
+
+    assert [item["title"] for item in survivors] == ["Washing machine anti-vibration stand"]
+    assert [row["filter_decision"] for row in audit_rows] == ["rejected", "rejected", "rejected", "rejected"]
+    assert [row["filter_stage"] for row in audit_rows] == [
+        "listing_title",
+        "listing_title",
+        "listing_title",
+        "listing_title",
+    ]
+
+
+def test_repository_blacklist_rejects_generic_title_when_attributes_reveal_off_target_device():
+    groups = load_filter_groups(REPO_BLACKLIST, [])
+    products = [
+        make_product(title="Replacement control housing", attributes_text='{"Product Type":"Universal Remote Control"}'),
+        make_product(title="Replacement body shell", attributes_text='{"Product Type":"Massager Device","Power":"USB"}'),
+        make_product(title="Kitchen appliance stand", attributes_text='{"High-concerned chemical":"None","Type":"Mixer Parts"}'),
+    ]
+
+    accepted, audit_rows = filter_products(products, groups)
+
+    assert [product.title for product in accepted] == ["Kitchen appliance stand"]
+    assert audit_rows[0]["filter_decision"] == "rejected"
+    assert audit_rows[0]["filter_stage"] == "detail_post_enrich"
+    assert audit_rows[1]["filter_decision"] == "rejected"
+    assert audit_rows[1]["filter_stage"] == "detail_post_enrich"
+    assert audit_rows[2]["filter_decision"] == "accepted"
+
+
+def test_repository_blacklist_allows_broad_appliance_accessories_without_electrical_or_chip_signals():
+    groups = load_filter_groups(REPO_BLACKLIST, [])
+    raw_products = [
+        {
+            "title": "Fit For Cecotec Conga 9590 9990 10090 AI Spin Revolution Ultra Power Home Parts Main Roller Side Brush Mop Cloth Filter Dust Bag",
+            "url": "https://example.test/conga",
+        },
+        {
+            "title": "Refrigerator Water Filter Compatible with EDR2RXD1,Replacement for W10413645A,Kenmore 46-9082,46-9903 Ice and Water Filter",
+            "url": "https://example.test/water-filter",
+        },
+        {
+            "title": "Gray Top-Load Washing Machine Cover - Modern Style Zipper Design, All-Season Protector for Home Balcony Daily Use",
+            "url": "https://example.test/washer-cover",
+        },
+        {
+            "title": "Thermomix TM7 Sliding Board with Wheels:Easy-Move Base Glider with Finger Grip Notch&Stable Rubber Base,Protects TM7&Countertops",
+            "url": "https://example.test/slider",
+        },
+    ]
+
+    survivors, audit_rows = prefilter_listing_products(
+        raw_products,
+        groups,
+        source_type="keyword",
+        source_value="home appliance accessories",
+    )
+
+    assert [item["title"] for item in survivors] == [
+        "Fit For Cecotec Conga 9590 9990 10090 AI Spin Revolution Ultra Power Home Parts Main Roller Side Brush Mop Cloth Filter Dust Bag",
+        "Refrigerator Water Filter Compatible with EDR2RXD1,Replacement for W10413645A,Kenmore 46-9082,46-9903 Ice and Water Filter",
+        "Gray Top-Load Washing Machine Cover - Modern Style Zipper Design, All-Season Protector for Home Balcony Daily Use",
+        "Thermomix TM7 Sliding Board with Wheels:Easy-Move Base Glider with Finger Grip Notch&Stable Rubber Base,Protects TM7&Countertops"
+    ]
+    assert audit_rows == []
+
+
+def test_repository_blacklist_prefilters_beauty_devices_and_appliance_timer_switches():
+    groups = load_filter_groups(REPO_BLACKLIST, [])
+    raw_products = [
+        {
+            "title": "Dcool Portable Facial Beauty Machine with Cold Hot EMS Skin Strengthening Anti-Swelling Electroporation for Home Use And Salon",
+            "url": "https://example.test/beauty",
+        },
+        {
+            "title": "1Pcs Dryer Timer Timing Switch For Dyer Washing Machine DFJ-A 180 Minutes 250V/15A",
+            "url": "https://example.test/timer",
+        },
+        {
+            "title": "Flex Edge Beater for KitchenAid Mixer 4.5-5 QT Tilt-Head Stand Mixer Attachments, Silicone Mixer Paddle Accessories Blender Part",
+            "url": "https://example.test/beater",
+        },
+    ]
+
+    survivors, audit_rows = prefilter_listing_products(
+        raw_products,
+        groups,
+        source_type="keyword",
+        source_value="home appliance accessories",
+    )
+
+    assert [item["title"] for item in survivors] == [
+        "Flex Edge Beater for KitchenAid Mixer 4.5-5 QT Tilt-Head Stand Mixer Attachments, Silicone Mixer Paddle Accessories Blender Part"
+    ]
+    assert [row["filter_decision"] for row in audit_rows] == ["rejected", "rejected"]
+    assert [row["filter_stage"] for row in audit_rows] == ["listing_title", "listing_title"]
+
+
+def test_repository_blacklist_does_not_reject_manual_therapy_tools_without_device_signal():
+    groups = load_filter_groups(REPO_BLACKLIST, [])
+    raw_products = [
+        {
+            "title": "Manual fascia massager roller",
+            "url": "https://example.test/manual-massager",
+        },
+        {
+            "title": "USB neck massager device",
+            "url": "https://example.test/usb-massager",
+        },
+    ]
+
+    survivors, audit_rows = prefilter_listing_products(
+        raw_products,
+        groups,
+        source_type="keyword",
+        source_value="home appliance accessories",
+    )
+
+    assert [item["title"] for item in survivors] == ["Manual fascia massager roller"]
+    assert [row["title"] for row in audit_rows] == ["USB neck massager device"]
+    assert [row["filter_decision"] for row in audit_rows] == ["rejected"]
+
+
+def test_filter_products_requires_device_signal_for_medical_therapy_blacklist():
+    groups = [
+        FilterGroup(
+            name="medical_therapy",
+            post_reject_terms=("massager",),
+            post_require_terms=("usb", "machine", "device", "ems"),
+        )
+    ]
+    products = [
+        make_product(title="Manual fascia massager roller"),
+        make_product(title="USB neck massager device"),
+        make_product(title="Replacement shell", attributes_text='{"Product Type":"Massager Device","Power":"USB"}'),
+    ]
+
+    accepted, audit_rows = filter_products(products, groups)
+
+    assert [product.title for product in accepted] == [
+        "Manual fascia massager roller",
+    ]
+    assert audit_rows[0]["filter_decision"] == "accepted"
+    assert audit_rows[0]["reject_terms"] == ""
+    assert audit_rows[1]["filter_decision"] == "rejected"
+    assert audit_rows[1]["reject_terms"] == "massager"
+    assert audit_rows[2]["filter_decision"] == "rejected"
+    assert audit_rows[2]["reject_fields"] == "attributes_text"

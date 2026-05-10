@@ -14,6 +14,8 @@ class FilterGroup:
     name: str
     pre_reject_terms: tuple[str, ...] = ()
     post_reject_terms: tuple[str, ...] = ()
+    pre_require_terms: tuple[str, ...] = ()
+    post_require_terms: tuple[str, ...] = ()
 
 
 def load_filter_groups(
@@ -26,14 +28,18 @@ def load_filter_groups(
         for item in payload.get("groups", []):
             name = str(item.get("name") or "").strip()
             pre_terms = tuple(_normalize_terms(item.get("pre_reject_terms", [])))
+            pre_require_terms = tuple(_normalize_terms(item.get("pre_require_terms", [])))
             post_source = item.get("post_reject_terms", item.get("terms", []))
             post_terms = tuple(_normalize_terms(post_source))
+            post_require_terms = tuple(_normalize_terms(item.get("post_require_terms", [])))
             if name and (pre_terms or post_terms):
                 groups.append(
                     FilterGroup(
                         name=name,
                         pre_reject_terms=pre_terms,
                         post_reject_terms=post_terms,
+                        pre_require_terms=pre_require_terms,
+                        post_require_terms=post_require_terms,
                     )
                 )
     cli_terms = tuple(_normalize_terms(reject_keywords))
@@ -55,7 +61,12 @@ def prefilter_listing_products(
     for product in raw_products:
         title = " ".join(str(product.get("title") or "").split())
         product_url = str(product.get("resolvedProductUrl") or product.get("url") or "")
-        reject_hits = _collect_text_hits(title, groups, terms_attr="pre_reject_terms", field="title")
+        reject_hits = _collect_group_hits(
+            {"title": title},
+            groups,
+            reject_terms_attr="pre_reject_terms",
+            require_terms_attr="pre_require_terms",
+        )
         if reject_hits:
             audit_rows.append(
                 {
@@ -90,13 +101,15 @@ def filter_products(
             product,
             groups,
             fields=("title", "attributes_text"),
-            terms_attr="post_reject_terms",
+            reject_terms_attr="post_reject_terms",
+            require_terms_attr="post_require_terms",
         )
         warning_hits = _collect_product_hits(
             product,
             groups,
             fields=("breadcrumb", "description_text"),
-            terms_attr="post_reject_terms",
+            reject_terms_attr="post_reject_terms",
+            require_terms_attr="post_require_terms",
         )
         decision = "rejected" if reject_hits else "accepted"
         stage = "detail_post_enrich" if reject_hits else "accepted"
@@ -126,31 +139,48 @@ def _collect_product_hits(
     groups: Iterable[FilterGroup],
     *,
     fields: tuple[str, ...],
-    terms_attr: str,
+    reject_terms_attr: str,
+    require_terms_attr: str,
 ) -> list[dict[str, str]]:
-    hits: list[dict[str, str]] = []
+    field_texts: dict[str, str] = {}
     for field in fields:
-        haystack = getattr(product, field, "").lower()
+        haystack = getattr(product, field, "")
         if not haystack:
             continue
-        hits.extend(_collect_text_hits(haystack, groups, terms_attr=terms_attr, field=field))
-    return hits
+        field_texts[field] = haystack
+    if not field_texts:
+        return []
+    return _collect_group_hits(
+        field_texts,
+        groups,
+        reject_terms_attr=reject_terms_attr,
+        require_terms_attr=require_terms_attr,
+    )
 
 
-def _collect_text_hits(
-    haystack: str,
+def _collect_group_hits(
+    field_texts: dict[str, str],
     groups: Iterable[FilterGroup],
     *,
-    terms_attr: str,
-    field: str,
+    reject_terms_attr: str,
+    require_terms_attr: str,
 ) -> list[dict[str, str]]:
     hits: list[dict[str, str]] = []
-    normalized_haystack = haystack.lower()
+    normalized_fields = {field: haystack.lower() for field, haystack in field_texts.items() if haystack}
+    combined_haystack = "\n".join(normalized_fields.values())
     for group in groups:
-        for term in getattr(group, terms_attr):
-            normalized = term.strip().lower()
-            if _matches_term(normalized_haystack, normalized):
-                hits.append({"group": group.name, "term": term, "field": field})
+        group_hits: list[dict[str, str]] = []
+        for field, haystack in normalized_fields.items():
+            for term in getattr(group, reject_terms_attr):
+                normalized = term.strip().lower()
+                if _matches_term(haystack, normalized):
+                    group_hits.append({"group": group.name, "term": term, "field": field})
+        if not group_hits:
+            continue
+        require_terms = getattr(group, require_terms_attr)
+        if require_terms and not any(_matches_term(combined_haystack, term.strip().lower()) for term in require_terms):
+            continue
+        hits.extend(group_hits)
     return hits
 
 

@@ -15,6 +15,38 @@
       "name": "chip_pcb",
       "pre_reject_terms": ["integrated circuit", "circuit board"],
       "post_reject_terms": ["chip", "ic", "integrated circuit", "pcb", "pcba", "circuit board", "motherboard"]
+    },
+    {
+      "name": "remote_control_device",
+      "pre_reject_terms": ["universal remote control", "air conditioner remote control", "ac remote control"],
+      "post_reject_terms": ["universal remote control", "air conditioner remote control", "ac remote control", "remote control"]
+    },
+    {
+      "name": "ignition_control",
+      "pre_reject_terms": ["pulse igniter", "gas stove igniter"],
+      "post_reject_terms": ["pulse igniter", "gas stove igniter", "igniter"]
+    },
+    {
+      "name": "medical_therapy",
+      "pre_reject_terms": ["massager", "therapy", "light therapy", "rehabilitation", "stimulation"],
+      "pre_require_terms": ["machine", "device", "instrument", "usb", "rechargeable", "electric", "electrical", "ems", "rf", "infrared", "laser", "magnetic", "stimulator", "220v", "110v"],
+      "post_reject_terms": ["massager", "therapy", "light therapy", "rehabilitation", "stimulation"],
+      "post_require_terms": ["machine", "device", "instrument", "usb", "rechargeable", "electric", "electrical", "ems", "rf", "infrared", "laser", "magnetic", "stimulator", "220v", "110v"]
+    },
+    {
+      "name": "steam_cleaner_device",
+      "pre_reject_terms": ["steam cleaner"],
+      "post_reject_terms": ["steam cleaner"]
+    },
+    {
+      "name": "beauty_device",
+      "pre_reject_terms": ["beauty machine", "facial beauty", "electroporation", "skin strengthening"],
+      "post_reject_terms": ["beauty machine", "facial beauty", "electroporation", "skin strengthening", "ems"]
+    },
+    {
+      "name": "appliance_timer_switch",
+      "pre_reject_terms": ["timer switch", "timing switch", "rotary knob timer"],
+      "post_reject_terms": ["timer switch", "timing switch", "rotary knob timer", "timer knob"]
     }
   ]
 }
