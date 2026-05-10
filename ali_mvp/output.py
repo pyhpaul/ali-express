@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 from dataclasses import asdict
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping, Sequence
 
 from .scoring import ProductRecord, RankRecord
 
@@ -104,12 +104,15 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def write_dict_csv(path: Path, fieldnames: list[str], rows: Iterable[dict[str, object]]) -> None:
+def write_dict_csv(path: Path, fieldnames: Sequence[str], rows: Iterable[Mapping[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
+            extra_fields = sorted(set(row) - set(fieldnames))
+            if extra_fields:
+                raise ValueError(f"unexpected CSV columns: {', '.join(extra_fields)}")
             writer.writerow({field: row.get(field, "") for field in fieldnames})
 
 

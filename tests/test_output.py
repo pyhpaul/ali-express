@@ -1,6 +1,10 @@
 import csv
 
+import pytest
+
 from ali_mvp.output import (
+    FILTER_AUDIT_FIELDS,
+    REVIEW_FIELDS,
     read_csv_rows,
     write_dict_csv,
     write_filter_audit_csv,
@@ -18,6 +22,42 @@ def test_read_csv_rows_round_trips_written_audit(tmp_path):
     loaded = read_csv_rows(path)
 
     assert loaded == [{"source_type": "keyword", "source_value": "x", "title": "A", "product_url": "u"}]
+
+
+def test_review_fields_match_expected_columns_and_order():
+    assert REVIEW_FIELDS == [
+        "source_type",
+        "source_value",
+        "title",
+        "product_url",
+        "image_url",
+        "price",
+        "search_card_url",
+        "entry_type",
+        "is_promoted",
+        "promo_channel",
+        "promotion_text",
+        "shop_name",
+        "shipping_text",
+        "attributes_text",
+        "description_text",
+        "detail_status",
+        "filter_decision",
+        "filter_stage",
+        "reject_groups",
+        "reject_terms",
+        "reject_fields",
+        "warning_groups",
+        "warning_terms",
+        "warning_fields",
+    ]
+
+
+def test_write_dict_csv_rejects_extra_keys(tmp_path):
+    path = tmp_path / "audit.csv"
+
+    with pytest.raises(ValueError, match="unexpected CSV columns: extra"):
+        write_dict_csv(path, ["source_type"], [{"source_type": "keyword", "extra": "boom"}])
 
 
 def test_write_products_csv_writes_header_and_rows(tmp_path):
@@ -131,16 +171,6 @@ def test_write_filter_audit_csv_writes_expected_columns(tmp_path):
         {
             "source_type": "keyword",
             "source_value": "home appliance accessories",
-            "title": "Battery charger board",
-            "product_url": "https://example.test/item",
-            "filter_decision": "rejected",
-            "filter_stage": "listing_title",
-            "reject_groups": "electrical_power",
-            "reject_terms": "battery",
-            "reject_fields": "title",
-            "warning_groups": "",
-            "warning_terms": "",
-            "warning_fields": "",
         }
     ]
 
@@ -149,7 +179,8 @@ def test_write_filter_audit_csv_writes_expected_columns(tmp_path):
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         written_rows = list(csv.DictReader(handle))
 
-    assert written_rows[0]["filter_stage"] == "listing_title"
-    assert written_rows[0]["filter_decision"] == "rejected"
-    assert written_rows[0]["reject_terms"] == "battery"
-    assert written_rows[0]["warning_terms"] == ""
+    assert written_rows[0]["source_type"] == "keyword"
+    assert written_rows[0]["source_value"] == "home appliance accessories"
+    for field in FILTER_AUDIT_FIELDS:
+        if field not in {"source_type", "source_value"}:
+            assert written_rows[0][field] == ""
