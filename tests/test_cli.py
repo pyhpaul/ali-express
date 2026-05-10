@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ali_mvp.cli import build_output_dir, build_parser
+from ali_mvp.cli import build_output_dir, build_parser, run_postprocess, run_scrape
 
 
 def test_scrape_parser_defaults_pages_to_none():
@@ -35,6 +35,14 @@ def test_scrape_parser_accepts_browser_profile_options():
     assert args.user_data_dir == ".browser-profile"
     assert args.port == 9333
     assert args.browser_hardening == "minimal"
+
+
+def test_scrape_parser_accepts_explicit_browser_hardening_off():
+    parser = build_parser()
+
+    args = parser.parse_args(["scrape", "--keyword", "women dress", "--browser-hardening", "off"])
+
+    assert args.browser_hardening == "off"
 
 
 def test_scrape_parser_accepts_pages_option():
@@ -72,6 +80,13 @@ def test_scrape_parser_accepts_blacklist_file_and_repeatable_reject_keyword():
     assert args.reject_keyword == ["sensor", "relay"]
 
 
+def test_scrape_parser_rejects_invalid_browser_hardening_value():
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["scrape", "--keyword", "women dress", "--browser-hardening", "aggressive"])
+
+
 def test_parser_accepts_postprocess_run_dir_and_default_browser_hardening():
     parser = build_parser()
 
@@ -79,7 +94,24 @@ def test_parser_accepts_postprocess_run_dir_and_default_browser_hardening():
     post_args = parser.parse_args(["postprocess", "--run-dir", "data/run-1"])
 
     assert scrape_args.browser_hardening == "minimal"
+    assert scrape_args.func is run_scrape
+    assert post_args.func is run_postprocess
     assert post_args.run_dir == "data/run-1"
+
+
+def test_parser_binds_handlers_for_scrape_and_postprocess():
+    parser = build_parser()
+
+    scrape_args = parser.parse_args(["scrape", "--keyword", "women dress"])
+    post_args = parser.parse_args(["postprocess", "--run-dir", "data/run-1"])
+
+    assert scrape_args.func is run_scrape
+    assert post_args.func is run_postprocess
+
+
+def test_run_postprocess_is_explicitly_unimplemented():
+    with pytest.raises(SystemExit, match="postprocess is not implemented yet"):
+        run_postprocess(argparse.Namespace(run_dir="data/run-1"))
 
 
 def test_run_scrape_rejects_non_positive_pages():

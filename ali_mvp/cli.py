@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_postprocess(args: argparse.Namespace) -> int:
-    return 0
+    raise SystemExit("postprocess is not implemented yet")
 
 
 def _collect_products_with_blacklist(
