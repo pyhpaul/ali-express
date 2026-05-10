@@ -59,7 +59,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Repeatable extra blacklist term added for this run.",
     )
+    scrape.add_argument(
+        "--browser-hardening",
+        choices=("off", "minimal"),
+        default="minimal",
+        help="Apply optional browser pacing/stealth hardening.",
+    )
     scrape.set_defaults(func=run_scrape)
+    postprocess = subparsers.add_parser(
+        "postprocess",
+        help="Generate zh outputs and review report from an existing run.",
+    )
+    postprocess.add_argument(
+        "--run-dir",
+        required=True,
+        help="Existing scrape run directory containing products.csv outputs.",
+    )
+    postprocess.set_defaults(func=run_postprocess)
     return parser
 
 
@@ -67,6 +83,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)
+
+
+def run_postprocess(args: argparse.Namespace) -> int:
+    return 0
 
 
 def _collect_products_with_blacklist(

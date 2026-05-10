@@ -34,6 +34,7 @@ def test_scrape_parser_accepts_browser_profile_options():
     assert args.keyword == "women dress"
     assert args.user_data_dir == ".browser-profile"
     assert args.port == 9333
+    assert args.browser_hardening == "minimal"
 
 
 def test_scrape_parser_accepts_pages_option():
@@ -69,6 +70,16 @@ def test_scrape_parser_accepts_blacklist_file_and_repeatable_reject_keyword():
 
     assert args.blacklist_file == "rules/product_blacklist.json"
     assert args.reject_keyword == ["sensor", "relay"]
+
+
+def test_parser_accepts_postprocess_run_dir_and_default_browser_hardening():
+    parser = build_parser()
+
+    scrape_args = parser.parse_args(["scrape", "--keyword", "women dress"])
+    post_args = parser.parse_args(["postprocess", "--run-dir", "data/run-1"])
+
+    assert scrape_args.browser_hardening == "minimal"
+    assert post_args.run_dir == "data/run-1"
 
 
 def test_run_scrape_rejects_non_positive_pages():
