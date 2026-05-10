@@ -51,7 +51,8 @@ def translate_texts(texts: list[str], *, cache_path: Path, translator) -> dict[s
         try:
             translated = translator(text)
         except Exception:
-            translated = text
+            result[text] = text
+            continue
         cache[text] = translated or text
         result[text] = cache[text]
     save_translation_cache(cache_path, cache)
