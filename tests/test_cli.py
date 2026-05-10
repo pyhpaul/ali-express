@@ -109,9 +109,31 @@ def test_parser_binds_handlers_for_scrape_and_postprocess():
     assert post_args.func is run_postprocess
 
 
-def test_run_postprocess_is_explicitly_unimplemented():
-    with pytest.raises(SystemExit, match="postprocess is not implemented yet"):
-        run_postprocess(argparse.Namespace(run_dir="data/run-1"))
+def test_run_postprocess_writes_review_zh_and_html(monkeypatch, tmp_path):
+    from ali_mvp import cli
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "products.csv").write_text(
+        "source_type,source_value,title,price,sold_count,rating,review_count,product_url,search_card_url,image_url,entry_type,is_promoted,promo_channel,promotion_text,promo_landing_url,shop_name,shipping_text,detail_rating,detail_review_count,breadcrumb,attributes_text,description_text,detail_status,scraped_at\n"
+        "keyword,home appliance accessories,Shock pad,$1,0,0,0,https://example.test/item/1,https://example.test/card/1,https://example.test/img.jpg,item_card,False,,, ,Store A,Free shipping,0,0,,\"{\"\"Type\"\":\"\"Pad\"\"}\",Accessory,,2026-05-11T00:00:00Z\n",
+        encoding="utf-8-sig",
+    )
+    (run_dir / "products_filter_audit.csv").write_text(
+        "source_type,source_value,title,product_url,filter_decision,filter_stage,reject_groups,reject_terms,reject_fields,warning_groups,warning_terms,warning_fields\n"
+        "keyword,home appliance accessories,Shock pad,https://example.test/item/1,accepted,accepted,,,,,,\n",
+        encoding="utf-8-sig",
+    )
+
+    args = argparse.Namespace(run_dir=str(run_dir))
+
+    code = cli.run_postprocess(args)
+
+    assert code == 0
+    assert (run_dir / "products_review.csv").exists()
+    assert (run_dir / "products_zh.csv").exists()
+    assert (run_dir / "products_filter_audit_zh.csv").exists()
+    assert (run_dir / "products_report.html").exists()
 
 
 def test_run_scrape_rejects_non_positive_pages():
@@ -217,12 +239,14 @@ def test_run_scrape_filters_products_before_writing_outputs(monkeypatch, tmp_pat
     monkeypatch.setattr(cli, "write_products_csv", lambda path, products: captured.setdefault("products", list(products)))
     monkeypatch.setattr(cli, "write_rank_csv", lambda path, rows: captured.setdefault("rank", list(rows)))
     monkeypatch.setattr(cli, "write_filter_audit_csv", lambda path, rows: captured.setdefault("audit", list(rows)))
+    monkeypatch.setattr(cli, "write_dict_csv", lambda path, fieldnames, rows: captured.setdefault("review", list(rows)))
 
     code = cli.run_scrape(args)
 
     assert code == 2
     assert captured["products"] == []
     assert captured["audit"][0]["filter_decision"] == "rejected"
+    assert captured["review"][0]["title"] == product.title
 
 
 def test_run_scrape_with_blacklist_reaches_accept_target_from_local_page_replay(monkeypatch, tmp_path):

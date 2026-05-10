@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 import re
@@ -18,8 +19,9 @@ from .browser import (
 )
 from .extractor import normalize_products
 from .filtering import FilterGroup, filter_products, load_filter_groups, prefilter_listing_products
-from .output import write_filter_audit_csv, write_products_csv, write_rank_csv
+from .output import REVIEW_FIELDS, write_dict_csv, write_filter_audit_csv, write_products_csv, write_rank_csv
 from .scoring import aggregate_rank
+from .review import build_review_rows
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,7 +88,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_postprocess(args: argparse.Namespace) -> int:
-    raise SystemExit("postprocess is not implemented yet")
+    from .postprocess import run_postprocess_for_dir
+
+    run_postprocess_for_dir(Path(args.run_dir), translator=lambda text: text)
+    print(f"Wrote: {Path(args.run_dir) / 'products_review.csv'}")
+    print(f"Wrote: {Path(args.run_dir) / 'products_zh.csv'}")
+    print(f"Wrote: {Path(args.run_dir) / 'products_filter_audit_zh.csv'}")
+    print(f"Wrote: {Path(args.run_dir) / 'products_report.html'}")
+    return 0
 
 
 def _collect_products_with_blacklist(
@@ -209,6 +218,8 @@ def run_scrape(args: argparse.Namespace) -> int:
     output_dir = build_output_dir(Path(args.output_dir), source_type=source_type, source_value=source_value, run_at=run_at)
     write_products_csv(output_dir / "products.csv", accepted_products)
     write_filter_audit_csv(output_dir / "products_filter_audit.csv", audit_rows)
+    review_rows = build_review_rows([asdict(product) for product in accepted_products], audit_rows)
+    write_dict_csv(output_dir / "products_review.csv", REVIEW_FIELDS, review_rows)
     write_rank_csv(output_dir / "category_rank.csv", aggregate_rank(accepted_products))
 
     print(f"Scraped raw items: {raw_products_count}")
@@ -216,6 +227,7 @@ def run_scrape(args: argparse.Namespace) -> int:
     print(f"Accepted products: {len(accepted_products)}")
     print(f"Wrote: {output_dir / 'products.csv'}")
     print(f"Wrote: {output_dir / 'products_filter_audit.csv'}")
+    print(f"Wrote: {output_dir / 'products_review.csv'}")
     print(f"Wrote: {output_dir / 'category_rank.csv'}")
     if not accepted_products:
         print("No accepted products extracted. Check login state, CAPTCHA, selector changes, or blacklist rules.")

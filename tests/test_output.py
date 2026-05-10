@@ -4,7 +4,9 @@ import pytest
 
 from ali_mvp.output import (
     FILTER_AUDIT_FIELDS,
+    FILTER_AUDIT_ZH_FIELDS,
     REVIEW_FIELDS,
+    PRODUCT_ZH_FIELDS,
     read_csv_rows,
     write_dict_csv,
     write_filter_audit_csv,
@@ -50,6 +52,64 @@ def test_review_fields_match_expected_columns_and_order():
         "warning_groups",
         "warning_terms",
         "warning_fields",
+    ]
+
+
+def test_product_zh_fields_match_expected_columns_and_order():
+    assert PRODUCT_ZH_FIELDS == [
+        "source_type",
+        "source_value",
+        "title",
+        "price",
+        "sold_count",
+        "rating",
+        "review_count",
+        "product_url",
+        "search_card_url",
+        "image_url",
+        "entry_type",
+        "is_promoted",
+        "promo_channel",
+        "promotion_text",
+        "promo_landing_url",
+        "shop_name",
+        "shipping_text",
+        "detail_rating",
+        "detail_review_count",
+        "breadcrumb",
+        "attributes_text",
+        "description_text",
+        "detail_status",
+        "scraped_at",
+        "title_zh",
+        "shop_name_zh",
+        "promotion_text_zh",
+        "attributes_summary",
+        "attributes_summary_zh",
+    ]
+
+
+def test_filter_audit_zh_fields_match_expected_columns_and_order():
+    assert FILTER_AUDIT_ZH_FIELDS == [
+        "source_type",
+        "source_value",
+        "title",
+        "product_url",
+        "filter_decision",
+        "filter_stage",
+        "reject_groups",
+        "reject_terms",
+        "reject_fields",
+        "warning_groups",
+        "warning_terms",
+        "warning_fields",
+        "filter_decision_zh",
+        "filter_stage_zh",
+        "reject_groups_zh",
+        "reject_terms_zh",
+        "warning_groups_zh",
+        "warning_terms_zh",
+        "reason_zh",
     ]
 
 

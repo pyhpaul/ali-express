@@ -86,6 +86,24 @@ REVIEW_FIELDS = [
     "warning_fields",
 ]
 
+PRODUCT_ZH_FIELDS = PRODUCT_FIELDS + [
+    "title_zh",
+    "shop_name_zh",
+    "promotion_text_zh",
+    "attributes_summary",
+    "attributes_summary_zh",
+]
+
+FILTER_AUDIT_ZH_FIELDS = FILTER_AUDIT_FIELDS + [
+    "filter_decision_zh",
+    "filter_stage_zh",
+    "reject_groups_zh",
+    "reject_terms_zh",
+    "warning_groups_zh",
+    "warning_terms_zh",
+    "reason_zh",
+]
+
 
 def write_products_csv(path: Path, products: Iterable[ProductRecord]) -> None:
     _write_dataclass_csv(path, PRODUCT_FIELDS, products)
