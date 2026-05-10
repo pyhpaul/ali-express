@@ -46,6 +46,7 @@ def normalize_products(
                 breadcrumb=_clean_text(raw.get("breadcrumb")),
                 attributes_text=_clean_text(raw.get("attributesText")),
                 description_text=_clean_text(raw.get("descriptionText")),
+                detail_status=_clean_text(raw.get("detailStatus")),
                 scraped_at=scraped_at,
             )
         )

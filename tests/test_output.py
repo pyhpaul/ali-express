@@ -30,6 +30,7 @@ def test_write_products_csv_writes_header_and_rows(tmp_path):
             breadcrumb="",
             attributes_text="",
             description_text="",
+            detail_status="",
             scraped_at="2026-05-08T00:00:00Z",
         )
     ]
@@ -68,6 +69,7 @@ def test_write_products_csv_includes_detail_enrichment_fields(tmp_path):
             breadcrumb="Home > Dresses",
             attributes_text='{"Material":"Cotton"}',
             description_text="Long sleeve dress",
+            detail_status="captcha_blocked",
             scraped_at="2026-05-08T00:00:00Z",
         )
     ]
@@ -83,6 +85,7 @@ def test_write_products_csv_includes_detail_enrichment_fields(tmp_path):
     assert rows[0]["shop_name"] == "Example Store"
     assert rows[0]["attributes_text"] == '{"Material":"Cotton"}'
     assert rows[0]["description_text"] == "Long sleeve dress"
+    assert rows[0]["detail_status"] == "captcha_blocked"
 
 
 def test_write_rank_csv_writes_header_and_rows(tmp_path):

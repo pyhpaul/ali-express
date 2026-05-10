@@ -31,6 +31,7 @@ PRODUCT_FIELDS = [
     "breadcrumb",
     "attributes_text",
     "description_text",
+    "detail_status",
     "scraped_at",
 ]
 
