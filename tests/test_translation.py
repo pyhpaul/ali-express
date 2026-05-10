@@ -1,6 +1,6 @@
 import json
 
-from ali_mvp.translation import load_translation_cache, summarize_attributes_text, translate_texts
+from ali_mvp.translation import build_reason_zh, load_translation_cache, summarize_attributes_text, translate_texts
 
 
 def test_summarize_attributes_returns_first_pairs_from_json():
@@ -76,3 +76,14 @@ def test_summarize_attributes_returns_empty_for_invalid_inputs():
     assert summarize_attributes_text("{", limit=2) == ""
     assert summarize_attributes_text("[]", limit=2) == ""
     assert summarize_attributes_text("{\"Color\":\"Blue\"}", limit=0) == ""
+
+
+def test_build_reason_zh_prefers_rule_mapping_over_raw_translation():
+    row = {
+        "reject_terms": "battery | charger",
+        "reject_groups": "electrical_power",
+        "warning_terms": "",
+        "filter_decision": "rejected",
+    }
+
+    assert build_reason_zh(row) == "带电供电类"

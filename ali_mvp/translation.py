@@ -4,6 +4,13 @@ import json
 from pathlib import Path
 
 
+REASON_ZH_RULES = (
+    ({"battery", "lithium", "charger", "power adapter"}, "带电供电类"),
+    ({"remote control", "controller", "pcb", "chip", "pcba"}, "电子控制或芯片类"),
+    ({"sensor", "ignition", "timer switch", "relay module"}, "电子元件或控制器类"),
+)
+
+
 def summarize_attributes_text(raw_text: str, limit: int = 3) -> str:
     try:
         parsed = json.loads(raw_text) if raw_text else {}
@@ -16,6 +23,22 @@ def summarize_attributes_text(raw_text: str, limit: int = 3) -> str:
         if str(key).strip() and str(value).strip():
             parts.append(f"{key}: {value}")
     return "; ".join(parts)
+
+
+def build_reason_zh(row: dict[str, str]) -> str:
+    haystack = " | ".join(
+        part
+        for part in (
+            row.get("reject_terms", ""),
+            row.get("warning_terms", ""),
+            row.get("reject_groups", ""),
+        )
+        if part
+    ).lower()
+    for terms, label in REASON_ZH_RULES:
+        if any(term in haystack for term in terms):
+            return label
+    return "未命中中文规则说明"
 
 
 def load_translation_cache(cache_path: Path) -> dict[str, str]:

@@ -39,3 +39,24 @@ def build_review_rows(products: Iterable[dict[str, str]], audit_rows: Iterable[d
             merged[field] = str(product.get(field, ""))
         result.append(merged)
     return result
+
+
+def enrich_review_rows_with_zh(
+    review_rows: list[dict[str, str]],
+    *,
+    translations: dict[str, str],
+    reason_builder,
+    attributes_summary_builder,
+) -> list[dict[str, str]]:
+    enriched: list[dict[str, str]] = []
+    for row in review_rows:
+        summary = attributes_summary_builder(row.get("attributes_text", ""))
+        copied = dict(row)
+        copied["title_zh"] = translations.get(row.get("title", ""), row.get("title", ""))
+        copied["shop_name_zh"] = translations.get(row.get("shop_name", ""), row.get("shop_name", ""))
+        copied["promotion_text_zh"] = translations.get(row.get("promotion_text", ""), row.get("promotion_text", ""))
+        copied["attributes_summary"] = summary
+        copied["attributes_summary_zh"] = translations.get(summary, summary)
+        copied["reason_zh"] = reason_builder(row)
+        enriched.append(copied)
+    return enriched

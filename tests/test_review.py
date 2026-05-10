@@ -1,6 +1,6 @@
 import pytest
 
-from ali_mvp.review import PRODUCT_CONTEXT_FIELDS, build_review_rows
+from ali_mvp.review import PRODUCT_CONTEXT_FIELDS, build_review_rows, enrich_review_rows_with_zh
 
 
 def test_build_review_rows_merges_product_context_into_audit_rows():
@@ -183,3 +183,35 @@ def test_build_review_rows_raises_on_duplicate_product_url():
             ],
             [],
         )
+
+
+def test_enrich_review_rows_with_zh_adds_translated_context_and_reason():
+    review_rows = [
+        {
+            "title": "Shock pad",
+            "shop_name": "Store A",
+            "promotion_text": "Hot deal",
+            "attributes_text": "{\"Color\":\"Blue\",\"Type\":\"Pad\"}",
+            "reject_terms": "battery | charger",
+            "reject_groups": "electrical_power",
+        }
+    ]
+
+    enriched = enrich_review_rows_with_zh(
+        review_rows,
+        translations={
+            "Shock pad": "减震垫",
+            "Store A": "A 店铺",
+            "Hot deal": "热卖",
+            "Color: Blue; Type: Pad": "颜色: 蓝色; 类型: 垫",
+        },
+        reason_builder=lambda row: "带电供电类",
+        attributes_summary_builder=lambda raw_text: "Color: Blue; Type: Pad",
+    )
+
+    assert enriched[0]["title_zh"] == "减震垫"
+    assert enriched[0]["shop_name_zh"] == "A 店铺"
+    assert enriched[0]["promotion_text_zh"] == "热卖"
+    assert enriched[0]["attributes_summary"] == "Color: Blue; Type: Pad"
+    assert enriched[0]["attributes_summary_zh"] == "颜色: 蓝色; 类型: 垫"
+    assert enriched[0]["reason_zh"] == "带电供电类"
