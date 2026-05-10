@@ -1,7 +1,23 @@
 import csv
 
-from ali_mvp.output import write_filter_audit_csv, write_products_csv, write_rank_csv
+from ali_mvp.output import (
+    read_csv_rows,
+    write_dict_csv,
+    write_filter_audit_csv,
+    write_products_csv,
+    write_rank_csv,
+)
 from ali_mvp.scoring import ProductRecord, RankRecord
+
+
+def test_read_csv_rows_round_trips_written_audit(tmp_path):
+    path = tmp_path / "products_filter_audit.csv"
+    rows = [{"source_type": "keyword", "source_value": "x", "title": "A", "product_url": "u"}]
+
+    write_dict_csv(path, ["source_type", "source_value", "title", "product_url"], rows)
+    loaded = read_csv_rows(path)
+
+    assert loaded == [{"source_type": "keyword", "source_value": "x", "title": "A", "product_url": "u"}]
 
 
 def test_write_products_csv_writes_header_and_rows(tmp_path):
