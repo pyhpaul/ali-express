@@ -179,6 +179,13 @@ def collect_raw_products(
 
     while True:
         current_products = collect_listing_page_products(page, scroll_rounds=scroll_rounds)
+        if enrich_detail:
+            _attach_listing_context(
+                current_products,
+                base_url=url,
+                page_url=str(getattr(page, "url", "") or url),
+                page_number=current_page,
+            )
         all_products.extend(dedupe_listing_products(current_products, seen_urls))
         if len(all_products) >= max_items:
             break
@@ -346,6 +353,8 @@ def _finalize_products(
     products = raw[:max_items]
     if enrich_detail:
         enrich_listing_products(page, products)
+    for product in products:
+        _strip_internal_product_fields(product)
     return products
 
 
@@ -514,13 +523,25 @@ return (() => {
 
 def _enrich_product_details(page: ChromiumPage, products: list[dict[str, object]]) -> None:
     listing_url = page.url
+    current_listing_page: int | None = None
+    listing_context_ready = False
     for product in products:
         _prepare_listing_product(product)
         detail_url = str(product.get("resolvedProductUrl") or product.get("url") or "")
         if not detail_url:
             continue
+        entry_type = str(product.get("entryType") or "")
         try:
-            if str(product.get("entryType") or "") == "promo_card":
+            target_listing_page = _listing_page_number(product)
+            has_listing_context = _has_listing_context(product)
+            if has_listing_context and (not listing_context_ready or current_listing_page != target_listing_page):
+                if not _restore_listing_context(page, product, str(listing_url or "")):
+                    product["detailStatus"] = "listing_context_failed"
+                    listing_context_ready = False
+                    continue
+                current_listing_page = target_listing_page
+                listing_context_ready = True
+            if entry_type == "promo_card":
                 promo_url = str(product.get("promoLandingUrl") or product.get("cardUrl") or "")
                 if promo_url:
                     page.get(promo_url)
@@ -528,9 +549,17 @@ def _enrich_product_details(page: ChromiumPage, products: list[dict[str, object]
                     promo = page.run_js(PROMO_FIELDS_SCRIPT)
                     if isinstance(promo, dict):
                         product.update(promo)
+                    listing_context_ready = False
+                    if has_listing_context:
+                        if not _restore_listing_context(page, product, str(listing_url or "")):
+                            product["detailStatus"] = "listing_context_failed"
+                            continue
+                        current_listing_page = target_listing_page
+                        listing_context_ready = True
             opened = _open_detail_from_listing_context(page, product)
             if not opened:
                 product["detailStatus"] = "detail_open_failed"
+                listing_context_ready = False
                 continue
             detail_page = _resolve_detail_page_context(page, product)
             if _is_captcha_page(str(detail_page.url), str(getattr(detail_page, "title", ""))):
@@ -539,6 +568,7 @@ def _enrich_product_details(page: ChromiumPage, products: list[dict[str, object]
             detail = detail_page.run_js(DETAIL_FIELDS_SCRIPT)
         except Exception:
             detail = {}
+            listing_context_ready = False
         if isinstance(detail, dict):
             detail = _normalize_detail_fields(detail)
             product.update(detail)
@@ -558,8 +588,29 @@ def _enrich_product_details(page: ChromiumPage, products: list[dict[str, object]
             if listing_url:
                 page.get(listing_url)
                 _wait_for_page_ready(page)
+            listing_context_ready = False
+            continue
+        listing_context_ready = entry_type != "promo_card"
     if listing_url:
         page.get(listing_url)
+
+
+def _restore_listing_context(page: ChromiumPage, product: dict[str, object], default_listing_url: str) -> bool:
+    target_page = _listing_page_number(product)
+    base_url = str(product.get("_listingBaseUrl") or default_listing_url or "")
+    page_url = str(product.get("_listingPageUrl") or base_url)
+    target_url = page_url or base_url
+    if target_page <= 1:
+        if not target_url:
+            return False
+        page.get(target_url)
+        _wait_for_page_ready(page)
+        return True
+    if not base_url:
+        return False
+    page.get(base_url)
+    _wait_for_page_ready(page)
+    return advance_listing_page(page, target_page)
 
 
 def _open_detail_from_listing_context(page: ChromiumPage, product: dict[str, object]) -> bool:
@@ -646,6 +697,30 @@ def _is_captcha_page(url: str, title: str) -> bool:
     if "验证码拦截" in str(title or ""):
         return True
     return "captcha" in lowered_title and "intercept" in lowered_title
+
+
+def _attach_listing_context(
+    products: list[dict[str, object]],
+    *,
+    base_url: str,
+    page_url: str,
+    page_number: int,
+) -> None:
+    for product in products:
+        product["_listingBaseUrl"] = base_url
+        product["_listingPageUrl"] = page_url or base_url
+        product["_listingPageNumber"] = page_number
+
+
+def _has_listing_context(product: dict[str, object]) -> bool:
+    return any(key in product for key in ("_listingBaseUrl", "_listingPageUrl", "_listingPageNumber"))
+
+
+def _listing_page_number(product: dict[str, object]) -> int:
+    try:
+        return max(1, int(product.get("_listingPageNumber") or 1))
+    except (TypeError, ValueError):
+        return 1
 
 
 def _prepare_listing_products(raw: list[object]) -> list[dict[str, object]]:
@@ -850,6 +925,11 @@ def _text_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [_text(item) for item in value if _text(item)]
+
+
+def _strip_internal_product_fields(product: dict[str, object]) -> None:
+    for key in [name for name in product if str(name).startswith("_")]:
+        product.pop(key, None)
 
 
 def _build_options(user_data_dir: str | None, port: int | None) -> ChromiumOptions:
