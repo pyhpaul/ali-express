@@ -274,6 +274,77 @@ def test_run_scrape_with_blacklist_reaches_accept_target_from_local_page_replay(
     ]
 
 
+def test_collect_products_with_blacklist_attaches_listing_context_before_detail_enrichment(monkeypatch):
+    from ali_mvp import cli
+
+    base_url = "https://www.aliexpress.com/wholesale?SearchText=home+appliance+accessories"
+    page_urls = [
+        base_url,
+        f"{base_url}&page=2",
+    ]
+    pages = [
+        [{"title": "Shock pad page 1", "url": "https://example.test/item/3001.html"}],
+        [{"title": "Shock pad page 2", "url": "https://example.test/item/3002.html"}],
+    ]
+    page_index = {"value": 0}
+    captured_contexts: list[list[tuple[str, str, int]]] = []
+
+    class FakePage:
+        def __init__(self):
+            self.url = page_urls[0]
+
+    monkeypatch.setattr(cli, "open_listing_page", lambda *a, **k: FakePage())
+    monkeypatch.setattr(
+        cli,
+        "collect_listing_page_products",
+        lambda page, scroll_rounds=8: deepcopy(pages[page_index["value"]]),
+    )
+    monkeypatch.setattr(cli, "dedupe_listing_products", lambda products, seen_keys: products)
+    monkeypatch.setattr(cli, "prefilter_listing_products", lambda products, groups, source_type, source_value: (products, []))
+    monkeypatch.setattr(cli, "normalize_products", lambda *a, **k: [])
+    monkeypatch.setattr(cli, "filter_products", lambda products, groups: ([], []))
+
+    def fake_advance(page, target_page):
+        if page_index["value"] >= len(pages) - 1:
+            return False
+        page_index["value"] += 1
+        page.url = page_urls[page_index["value"]]
+        return True
+
+    def fake_enrich(page, products):
+        captured_contexts.append(
+            [
+                (
+                    product["_listingBaseUrl"],
+                    product["_listingPageUrl"],
+                    product["_listingPageNumber"],
+                )
+                for product in products
+            ]
+        )
+
+    monkeypatch.setattr(cli, "advance_listing_page", fake_advance)
+    monkeypatch.setattr(cli, "enrich_listing_products", fake_enrich)
+
+    cli._collect_products_with_blacklist(
+        url=base_url,
+        max_items=5,
+        source_type="keyword",
+        source_value="home appliance accessories",
+        scraped_at="2026-05-10T00:00:00Z",
+        groups=[],
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=True,
+        pages=2,
+    )
+
+    assert captured_contexts == [
+        [(base_url, page_urls[0], 1)],
+        [(base_url, page_urls[1], 2)],
+    ]
+
+
 def test_run_scrape_with_blacklist_reports_full_processed_counts_when_final_page_accepts_are_truncated(
     monkeypatch,
     tmp_path,

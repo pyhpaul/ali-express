@@ -470,6 +470,38 @@ return (() => {
     return '';
   }
 
+  function metaDescription() {
+    const nodes = Array.from(document.querySelectorAll(
+      'meta[name="description"], meta[property="og:description"], meta[name="twitter:description"]'
+    ));
+    for (const node of nodes) {
+      const value = cleanText(node.getAttribute('content') || '');
+      if (value) return value;
+    }
+    return '';
+  }
+
+  function detailDescriptionText() {
+    const selectors = [
+      '#product-description',
+      '[data-pl="product-description"]',
+      '[data-pl="description"]',
+      '#nav-description',
+      '[class*="product-description"]',
+      '[class*="detail-description"]',
+      '[class*="description--"]',
+      '[class*="description"]'
+    ];
+    for (const selector of selectors) {
+      const nodes = Array.from(document.querySelectorAll(selector));
+      for (const node of nodes) {
+        const value = cleanText(textOf(node));
+        if (value) return value;
+      }
+    }
+    return '';
+  }
+
   const storeNodes = Array.from(document.querySelectorAll('a[href*="store"], [class*="store"] a, [class*="shop"] a'))
     .map(node => cleanText(textOf(node)))
     .filter(Boolean);
@@ -492,9 +524,10 @@ return (() => {
     breadcrumbCandidates: breadcrumbNodes,
     attributesText: attributesJson(),
     attributePairs: attributePairs,
-    descriptionText: cleanText(textOf(document.querySelector('[class*="description"], [data-pl="description"], #product-description'))),
+    descriptionText: detailDescriptionText(),
     descriptionFrameText: descriptionFrames[0] || '',
     jsonLdDescription: jsonLdDescription(),
+    metaDescription: metaDescription(),
     reviewerText: reviewerText
   };
 })()
@@ -525,7 +558,7 @@ def _enrich_product_details(page: ChromiumPage, products: list[dict[str, object]
     listing_url = page.url
     current_listing_page: int | None = None
     listing_context_ready = False
-    for product in products:
+    for index, product in enumerate(products):
         _prepare_listing_product(product)
         detail_url = str(product.get("resolvedProductUrl") or product.get("url") or "")
         if not detail_url:
@@ -559,15 +592,33 @@ def _enrich_product_details(page: ChromiumPage, products: list[dict[str, object]
             opened = _open_detail_from_listing_context(page, product)
             if not opened:
                 product["detailStatus"] = "detail_open_failed"
+                if has_listing_context:
+                    _restore_listing_context(page, product, str(listing_url or ""))
+                elif listing_url:
+                    page.get(str(listing_url))
+                    _wait_for_page_ready(page)
                 listing_context_ready = False
                 continue
             detail_page = _resolve_detail_page_context(page, product)
             if _is_captcha_page(str(detail_page.url), str(getattr(detail_page, "title", ""))):
-                product["detailStatus"] = "captcha_blocked"
-                break
+                if not _wait_for_captcha_resolution(detail_page):
+                    product["detailStatus"] = "captcha_blocked"
+                    _mark_detail_status(products[index + 1 :], "detail_skipped_after_captcha")
+                    break
             detail = detail_page.run_js(DETAIL_FIELDS_SCRIPT)
         except Exception:
             detail = {}
+            if has_listing_context:
+                try:
+                    _restore_listing_context(page, product, str(listing_url or ""))
+                except Exception:
+                    pass
+            elif listing_url:
+                try:
+                    page.get(str(listing_url))
+                    _wait_for_page_ready(page)
+                except Exception:
+                    pass
             listing_context_ready = False
         if isinstance(detail, dict):
             detail = _normalize_detail_fields(detail)
@@ -595,6 +646,26 @@ def _enrich_product_details(page: ChromiumPage, products: list[dict[str, object]
         page.get(listing_url)
 
 
+def _wait_for_captcha_resolution(
+    page: ChromiumPage,
+    timeout_seconds: float = 60.0,
+    interval_seconds: float = 1.0,
+) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not _is_captcha_page(str(getattr(page, "url", "")), str(getattr(page, "title", ""))):
+            return True
+        time.sleep(interval_seconds)
+        _wait_for_page_ready(page)
+    return not _is_captcha_page(str(getattr(page, "url", "")), str(getattr(page, "title", "")))
+
+
+def _mark_detail_status(products: list[dict[str, object]], status: str) -> None:
+    for product in products:
+        if not product.get("detailStatus"):
+            product["detailStatus"] = status
+
+
 def _restore_listing_context(page: ChromiumPage, product: dict[str, object], default_listing_url: str) -> bool:
     target_page = _listing_page_number(product)
     base_url = str(product.get("_listingBaseUrl") or default_listing_url or "")
@@ -619,28 +690,38 @@ def _open_detail_from_listing_context(page: ChromiumPage, product: dict[str, obj
     before_tab_id = str(getattr(page, "tab_id", "") or "")
     script = _detail_click_script(product)
     clicked = page.run_js(script)
-    if clicked not in {"clicked", "navigated"}:
+    if clicked in {"clicked", "navigated"}:
+        _wait_for_page_ready(page)
+        after_url = str(getattr(page, "url", "") or "")
+        if after_url and after_url != before_url and "/item/" in after_url:
+            product["_detailUsedNewTab"] = False
+            product["_detailTabId"] = before_tab_id
+            product["_listingTabId"] = before_tab_id
+            return True
+
+        after_tabs = list(getattr(page, "tab_ids", []) or [])
+        new_tabs = [tab_id for tab_id in after_tabs if tab_id not in before_tabs]
+        if new_tabs:
+            detail_tab_id = str(getattr(page, "latest_tab", "") or new_tabs[-1])
+            detail_page = page.get_tab(detail_tab_id)
+            _wait_for_page_ready(detail_page)
+            detail_url = str(getattr(detail_page, "url", "") or "")
+            if detail_url and "/item/" in detail_url:
+                product["_detailUsedNewTab"] = True
+                product["_detailTabId"] = detail_tab_id
+                product["_listingTabId"] = before_tab_id
+                return True
+
+    direct_url = _direct_detail_open_url(product)
+    if not direct_url:
         return False
+    page.get(direct_url)
     _wait_for_page_ready(page)
     after_url = str(getattr(page, "url", "") or "")
-    if after_url and after_url != before_url and "/item/" in after_url:
-        product["_detailUsedNewTab"] = False
-        product["_detailTabId"] = before_tab_id
-        product["_listingTabId"] = before_tab_id
-        return True
-
-    after_tabs = list(getattr(page, "tab_ids", []) or [])
-    new_tabs = [tab_id for tab_id in after_tabs if tab_id not in before_tabs]
-    if not new_tabs:
+    if not after_url or "/item/" not in after_url:
         return False
-    detail_tab_id = str(getattr(page, "latest_tab", "") or new_tabs[-1])
-    detail_page = page.get_tab(detail_tab_id)
-    _wait_for_page_ready(detail_page)
-    detail_url = str(getattr(detail_page, "url", "") or "")
-    if not detail_url or "/item/" not in detail_url:
-        return False
-    product["_detailUsedNewTab"] = True
-    product["_detailTabId"] = detail_tab_id
+    product["_detailUsedNewTab"] = False
+    product["_detailTabId"] = before_tab_id
     product["_listingTabId"] = before_tab_id
     return True
 
@@ -687,6 +768,27 @@ return (() => {{
   return 'clicked';
 }})()
 """
+
+
+def _direct_detail_open_url(product: dict[str, object]) -> str:
+    entry_type = str(product.get("entryType") or "")
+    candidates: list[str]
+    if entry_type == "promo_card":
+        candidates = [
+            str(product.get("resolvedProductUrl") or ""),
+            str(product.get("url") or ""),
+            str(product.get("cardUrl") or ""),
+        ]
+    else:
+        candidates = [
+            str(product.get("cardUrl") or ""),
+            str(product.get("resolvedProductUrl") or ""),
+            str(product.get("url") or ""),
+        ]
+    for candidate in candidates:
+        if "/item/" in candidate:
+            return candidate
+    return ""
 
 
 def _is_captcha_page(url: str, title: str) -> bool:
@@ -800,6 +902,7 @@ def _normalize_detail_fields(detail: dict[str, object]) -> dict[str, object]:
         _text(detail.get("descriptionFrameText")),
         _text(detail.get("descriptionText")),
         _text(detail.get("jsonLdDescription")),
+        _text(detail.get("metaDescription")),
     )
     normalized["detailReviewText"] = _normalize_review_text(
         _text(detail.get("detailReviewText")),
@@ -894,7 +997,7 @@ def _parse_attributes_json(raw_text: str) -> dict[str, object] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _normalize_description_text(frame_text: str, fallback: str, jsonld_text: str) -> str:
+def _normalize_description_text(frame_text: str, fallback: str, jsonld_text: str, meta_text: str) -> str:
     if frame_text:
         return frame_text
     bad_prefixes = (
@@ -904,7 +1007,7 @@ def _normalize_description_text(frame_text: str, fallback: str, jsonld_text: str
     )
     lowered = fallback.lower()
     if not fallback or any(lowered.startswith(prefix) for prefix in bad_prefixes):
-        return jsonld_text
+        return jsonld_text or meta_text
     return fallback
 
 
