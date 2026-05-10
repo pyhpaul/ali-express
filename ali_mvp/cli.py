@@ -8,6 +8,7 @@ from urllib.parse import quote_plus
 from urllib.parse import urlparse
 
 from .browser import (
+    _attach_listing_context,
     advance_listing_page,
     collect_listing_page_products,
     collect_raw_products,
@@ -102,6 +103,12 @@ def _collect_products_with_blacklist(
         audit_rows.extend(listing_audit)
 
         if enrich_detail and listing_survivors:
+            _attach_listing_context(
+                listing_survivors,
+                base_url=url,
+                page_url=str(getattr(page, "url", "") or url),
+                page_number=current_page,
+            )
             enrich_listing_products(page, listing_survivors)
 
         normalized = normalize_products(

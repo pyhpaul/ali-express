@@ -25,6 +25,7 @@ def test_detail_fields_script_targets_product_specs_and_jsonld_fallbacks():
     assert '[class*="ku--wrap"]' in browser.DETAIL_FIELDS_SCRIPT
     assert 'application/ld+json' in browser.DETAIL_FIELDS_SCRIPT
     assert "jsonLdDescription" in browser.DETAIL_FIELDS_SCRIPT
+    assert "metaDescription" in browser.DETAIL_FIELDS_SCRIPT
 
 
 def test_collect_raw_products_uses_finalize_path_for_detail_enrichment():
@@ -297,6 +298,80 @@ def test_enrich_product_details_continues_after_single_product_failure(monkeypat
     assert open_calls["count"] == 3
 
 
+def test_enrich_product_details_restores_default_listing_after_open_failure(monkeypatch):
+    listing_url = "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"
+
+    class FakePage:
+        def __init__(self):
+            self.url = listing_url
+            self.title = "listing"
+            self.mode = "listing"
+            self.calls: list[str] = []
+
+        def get(self, url):
+            self.calls.append(url)
+            self.url = url
+            if url == listing_url:
+                self.mode = "listing"
+                self.title = "listing"
+            elif "/item/" in url:
+                self.mode = "detail"
+                self.title = "detail"
+            else:
+                self.mode = "promo"
+                self.title = "promo"
+
+        def back(self):
+            self.url = listing_url
+            self.mode = "listing"
+            self.title = "listing"
+
+        def run_js(self, script):
+            if script == browser.DETAIL_FIELDS_SCRIPT:
+                return {
+                    "shopName": "Example Store",
+                    "attributesText": '{"Type":"Accessory"}',
+                    "descriptionText": "detail text",
+                }
+            return {}
+
+    open_modes: list[tuple[str, str]] = []
+
+    def fake_open(page, product):
+        open_modes.append((product["url"], page.mode))
+        if product["url"].endswith("/1.html"):
+            page.url = "https://www.aliexpress.com/ssr/300000512/BundleDeals2"
+            page.mode = "promo"
+            page.title = "promo"
+            return False
+        if page.mode != "listing":
+            return False
+        page.url = product["url"]
+        page.mode = "detail"
+        page.title = "detail"
+        return True
+
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(browser, "_open_detail_from_listing_context", fake_open)
+    monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
+
+    products = [
+        {"url": "https://www.aliexpress.com/item/1.html"},
+        {"url": "https://www.aliexpress.com/item/2.html"},
+    ]
+
+    page = FakePage()
+    browser._enrich_product_details(page, products)
+
+    assert open_modes == [
+        ("https://www.aliexpress.com/item/1.html", "listing"),
+        ("https://www.aliexpress.com/item/2.html", "listing"),
+    ]
+    assert products[0]["detailStatus"] == "detail_open_failed"
+    assert products[1]["shopName"] == "Example Store"
+    assert page.calls[0] == listing_url
+
+
 def test_enrich_product_details_stops_after_captcha_and_marks_status(monkeypatch):
     class FakePage:
         def __init__(self):
@@ -329,6 +404,7 @@ def test_enrich_product_details_stops_after_captcha_and_marks_status(monkeypatch
         or True,
     )
     monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
+    monkeypatch.setattr(browser, "_wait_for_captcha_resolution", lambda page, timeout_seconds=60.0, interval_seconds=1.0: False)
 
     products = [
         {"url": "https://www.aliexpress.com/item/1.html", "title": "blocked first"},
@@ -342,8 +418,67 @@ def test_enrich_product_details_stops_after_captcha_and_marks_status(monkeypatch
     assert products[0]["detailStatus"] == "captcha_blocked"
     assert products[0].get("attributesText", "") == ""
     assert products[0].get("descriptionText", "") == ""
-    assert products[1].get("detailStatus", "") == ""
+    assert products[1]["detailStatus"] == "detail_skipped_after_captcha"
     assert products[1].get("shopName", "") == ""
+
+
+def test_enrich_product_details_resumes_when_captcha_is_cleared(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.url = "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"
+            self.title = "listing"
+            self.current_url = ""
+
+        def get(self, url):
+            self.url = url
+
+        def back(self):
+            self.url = "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"
+            self.title = "listing"
+
+        def run_js(self, script):
+            if script == browser.DETAIL_FIELDS_SCRIPT:
+                return {
+                    "shopName": "Example Store",
+                    "attributesText": '{"Type":"Accessory"}',
+                    "descriptionText": f"detail for {self.current_url}",
+                }
+            return {}
+
+    open_calls = {"count": 0}
+
+    def fake_open(page, product):
+        open_calls["count"] += 1
+        page.current_url = product["url"]
+        if open_calls["count"] == 1:
+            page.url = "https://www.aliexpress.com//item/1.html/_____tmd_____/punish?x5step=1"
+            page.title = "验证码拦截"
+            return True
+        page.url = product["url"]
+        page.title = "detail"
+        return True
+
+    def fake_wait_for_captcha(page, timeout_seconds=60.0, interval_seconds=1.0):
+        page.url = page.current_url
+        page.title = "detail"
+        return True
+
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(browser, "_open_detail_from_listing_context", fake_open)
+    monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
+    monkeypatch.setattr(browser, "_wait_for_captcha_resolution", fake_wait_for_captcha)
+
+    products = [
+        {"url": "https://www.aliexpress.com/item/1.html", "title": "captcha then cleared"},
+        {"url": "https://www.aliexpress.com/item/2.html", "title": "normal next"},
+    ]
+
+    browser._enrich_product_details(FakePage(), products)
+
+    assert products[0]["shopName"] == "Example Store"
+    assert products[0].get("detailStatus", "") == ""
+    assert products[1]["shopName"] == "Example Store"
+    assert products[1].get("detailStatus", "") == ""
 
 
 def test_enrich_product_details_resolves_promo_entry_and_keeps_promotion_text(monkeypatch):
@@ -633,8 +768,8 @@ def test_open_detail_from_listing_context_requires_leaving_listing_page(monkeypa
     monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
 
     product = {
-        "cardUrl": "https://www.aliexpress.com/item/1001.html?from=search",
-        "resolvedProductUrl": "https://www.aliexpress.com/item/1001.html",
+        "cardUrl": "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html",
+        "resolvedProductUrl": "",
     }
 
     page = FakePage()
@@ -692,6 +827,42 @@ def test_open_detail_from_listing_context_switches_to_new_tab_when_card_opens_bl
     assert opened is True
     assert product["_detailTabId"] == "detail-tab"
     assert product["_detailUsedNewTab"] is True
+
+
+def test_open_detail_from_listing_context_falls_back_to_direct_navigation_when_card_missing(monkeypatch):
+    wait_calls: list[tuple[str, str]] = []
+
+    class FakePage:
+        def __init__(self):
+            self.url = "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"
+            self.title = "listing"
+            self.calls: list[str] = []
+
+        def run_js(self, script):
+            self.calls.append(script)
+            if "window.__ALI_MVP_DETAIL_CLICK__" in script:
+                return "missing"
+            return None
+
+        def get(self, url):
+            self.url = url
+            self.title = "detail"
+
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page: wait_calls.append((page.url, page.title)))
+
+    product = {
+        "entryType": "item_card",
+        "cardUrl": "https://www.aliexpress.com/item/1001.html?from=search",
+        "resolvedProductUrl": "https://www.aliexpress.com/item/1001.html",
+    }
+
+    page = FakePage()
+    opened = browser._open_detail_from_listing_context(page, product)
+
+    assert opened is True
+    assert page.url == "https://www.aliexpress.com/item/1001.html?from=search"
+    assert wait_calls == [("https://www.aliexpress.com/item/1001.html?from=search", "detail")]
 
 
 def test_is_captcha_page_detects_punish_url_and_title():
@@ -773,6 +944,27 @@ def test_normalize_detail_fields_merges_spec_pairs_and_jsonld_description_fallba
         "Brand Name": "FULANG,OLOEY",
     }
     assert normalized["descriptionText"] == "Buy Home Wireless Chest Enhanced Vibration Massage Machine USB Device Massager 2026 at AliExpress."
+
+
+def test_normalize_detail_fields_uses_meta_description_fallback_when_other_description_sources_are_empty():
+    detail = {
+        "shopName": "Example Store",
+        "shopNameCandidates": ["Example Store"],
+        "breadcrumb": "",
+        "breadcrumbCandidates": [],
+        "descriptionText": "Description Report this item or seller",
+        "descriptionFrameText": "",
+        "jsonLdDescription": "",
+        "metaDescription": "Replacement Parts 6 Point Fusion 4980 Blade Cutter Assembly Compatible with Oster Osterizer Blender.",
+        "detailReviewText": "",
+        "reviewerText": "",
+    }
+
+    normalized = browser._normalize_detail_fields(detail)
+
+    assert normalized["descriptionText"] == (
+        "Replacement Parts 6 Point Fusion 4980 Blade Cutter Assembly Compatible with Oster Osterizer Blender."
+    )
 
 
 def test_normalize_detail_fields_cleans_polluted_breadcrumb_fallback():
