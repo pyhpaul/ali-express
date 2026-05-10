@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from ali_mvp.translation import build_reason_zh, load_translation_cache, summarize_attributes_text, translate_texts
 
 
@@ -153,3 +155,23 @@ def test_build_reason_zh_falls_back_to_terms_when_group_missing():
     }
 
     assert build_reason_zh(row) == "电子元件或控制器类"
+
+
+@pytest.mark.parametrize(
+    ("reject_terms", "expected"),
+    [
+        ("remote control", "遥控控制类"),
+        ("ac remote control", "遥控控制类"),
+        ("timer switch", "定时控制类"),
+        ("rotary knob timer", "定时控制类"),
+    ],
+)
+def test_build_reason_zh_uses_exact_term_fallback_without_group(reject_terms, expected):
+    row = {
+        "reject_groups": "",
+        "warning_groups": "",
+        "reject_terms": reject_terms,
+        "warning_terms": "",
+    }
+
+    assert build_reason_zh(row) == expected

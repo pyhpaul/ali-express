@@ -19,14 +19,13 @@ REASON_ZH_GROUP_RULES = (
 
 REASON_ZH_TERM_RULES = (
     ({"battery", "lithium", "charger", "power adapter", "power bank", "power supply", "rechargeable"}, "带电供电类"),
-    ({"remote control", "controller", "pcb", "chip", "pcba", "remote control socket", "gsm gate opener", "relay module", "smart switch", "wifi switch", "zigbee switch"}, "电子元件或控制器类"),
-    ({"sensor", "ignition", "timer switch", "relay module", "timing switch", "timer knob", "rotary knob timer"}, "电子元件或控制器类"),
-    ({"universal remote control", "air conditioner remote control", "ac remote control", "remote control"}, "遥控控制类"),
-    ({"pulse igniter", "gas stove igniter", "igniter"}, "点火控制类"),
+    ({"remote control", "universal remote control", "air conditioner remote control", "ac remote control"}, "遥控控制类"),
+    ({"controller", "pcb", "chip", "pcba", "remote control socket", "gsm gate opener", "relay module", "smart switch", "wifi switch", "zigbee switch", "sensor"}, "电子元件或控制器类"),
+    ({"igniter", "pulse igniter", "gas stove igniter"}, "点火控制类"),
+    ({"timer switch", "timing switch", "rotary knob timer", "timer knob"}, "定时控制类"),
     ({"massager", "therapy", "light therapy", "rehabilitation", "stimulation"}, "治疗理疗设备类"),
     ({"steam cleaner"}, "整机清洁设备类"),
     ({"beauty machine", "facial beauty", "electroporation", "skin strengthening"}, "美容仪器设备类"),
-    ({"timer switch", "timing switch", "rotary knob timer", "timer knob"}, "定时控制类"),
 )
 
 
@@ -50,6 +49,17 @@ def _split_rule_values(raw_value: str) -> list[str]:
     return [part.strip().lower() for part in re.split(r"[|,;\n]+", raw_value) if part.strip()]
 
 
+def _build_term_to_label_map() -> dict[str, str]:
+    term_to_label: dict[str, str] = {}
+    for terms, label in REASON_ZH_TERM_RULES:
+        for term in terms:
+            term_to_label.setdefault(term, label)
+    return term_to_label
+
+
+TERM_TO_REASON_ZH = _build_term_to_label_map()
+
+
 def _build_reason_from_groups(row: dict[str, str]) -> str:
     groups = _split_rule_values(row.get("reject_groups", "")) + _split_rule_values(row.get("warning_groups", ""))
     group_to_label = dict(REASON_ZH_GROUP_RULES)
@@ -60,16 +70,10 @@ def _build_reason_from_groups(row: dict[str, str]) -> str:
 
 
 def _build_reason_from_terms(row: dict[str, str]) -> str:
-    haystack = " | ".join(
-        part
-        for part in (
-            row.get("reject_terms", ""),
-            row.get("warning_terms", ""),
-        )
-        if part
-    ).lower()
-    for terms, label in REASON_ZH_TERM_RULES:
-        if any(term in haystack for term in terms):
+    tokens = _split_rule_values(row.get("reject_terms", "")) + _split_rule_values(row.get("warning_terms", ""))
+    for token in tokens:
+        label = TERM_TO_REASON_ZH.get(token)
+        if label:
             return label
     return ""
 
