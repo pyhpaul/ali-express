@@ -20,7 +20,17 @@ PRODUCT_CONTEXT_FIELDS = (
 
 
 def build_review_rows(products: Iterable[dict[str, str]], audit_rows: Iterable[dict[str, str]]) -> list[dict[str, str]]:
-    product_index = {row.get("product_url", ""): row for row in products if row.get("product_url")}
+    """Join audit rows with product context by product_url; duplicate product_url values raise ValueError."""
+
+    product_index: dict[str, dict[str, str]] = {}
+    for row in products:
+        product_url = row.get("product_url", "")
+        if not product_url:
+            continue
+        if product_url in product_index:
+            raise ValueError(f"duplicate product_url: {product_url}")
+        product_index[product_url] = row
+
     result: list[dict[str, str]] = []
     for audit in audit_rows:
         merged = dict(audit)
