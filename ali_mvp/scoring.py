@@ -34,6 +34,7 @@ class ProductRecord:
     attributes_text: str
     description_text: str
     scraped_at: str
+    detail_status: str = ""
 
 
 @dataclass(frozen=True)

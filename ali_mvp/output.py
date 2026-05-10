@@ -31,6 +31,7 @@ PRODUCT_FIELDS = [
     "breadcrumb",
     "attributes_text",
     "description_text",
+    "detail_status",
     "scraped_at",
 ]
 
@@ -49,6 +50,7 @@ FILTER_AUDIT_FIELDS = [
     "title",
     "product_url",
     "filter_decision",
+    "filter_stage",
     "reject_groups",
     "reject_terms",
     "reject_fields",

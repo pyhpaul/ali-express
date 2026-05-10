@@ -100,3 +100,29 @@ def test_normalize_products_uses_resolved_promo_item_url_and_keeps_promo_metadat
     assert product.promo_channel == "Dollar Express"
     assert product.promotion_text == "Free shipping on 3 items | Free returns | Buy more,save more"
     assert product.promo_landing_url == "https://www.aliexpress.com/ssr/300000512/BundleDeals2?productIds=1005007009946538:12000057714698736"
+
+
+def test_normalize_products_maps_detail_status_field():
+    raw = [
+        {
+            "title": "shock pad",
+            "price": "$1.13",
+            "soldText": "3 sold",
+            "ratingText": "",
+            "reviewText": "",
+            "url": "https://www.aliexpress.com/item/1005007009946538.html",
+            "cardUrl": "https://www.aliexpress.com/item/1005007009946538.html",
+            "image": "",
+            "detailStatus": "captcha_blocked",
+        }
+    ]
+
+    products = normalize_products(
+        raw,
+        source_type="keyword",
+        source_value="home appliance accessories",
+        scraped_at="2026-05-10T00:00:00Z",
+    )
+
+    assert len(products) == 1
+    assert products[0].detail_status == "captcha_blocked"
