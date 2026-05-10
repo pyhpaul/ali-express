@@ -87,3 +87,69 @@ def test_build_reason_zh_prefers_rule_mapping_over_raw_translation():
     }
 
     assert build_reason_zh(row) == "带电供电类"
+
+
+def test_build_reason_zh_prefers_canonical_group_mapping_over_terms():
+    row = {
+        "reject_groups": "electrical_power",
+        "warning_groups": "",
+        "reject_terms": "power bank | power supply | rechargeable",
+        "warning_terms": "",
+    }
+
+    assert build_reason_zh(row) == "带电供电类"
+
+
+def test_build_reason_zh_returns_group_mapping_without_terms():
+    row = {
+        "reject_groups": "remote_control_device",
+        "warning_groups": "",
+        "reject_terms": "",
+        "warning_terms": "",
+    }
+
+    assert build_reason_zh(row) == "遥控控制类"
+
+
+def test_build_reason_zh_returns_fallback_for_unknown_group_and_terms():
+    row = {
+        "reject_groups": "unknown_group",
+        "warning_groups": "mystery_group",
+        "reject_terms": "unknown term",
+        "warning_terms": "another mystery",
+    }
+
+    assert build_reason_zh(row) == "未命中中文规则说明"
+
+
+def test_build_reason_zh_normalizes_group_case():
+    row = {
+        "reject_groups": "ELECTRICAL_POWER",
+        "warning_groups": "",
+        "reject_terms": "",
+        "warning_terms": "",
+    }
+
+    assert build_reason_zh(row) == "带电供电类"
+
+
+def test_build_reason_zh_uses_first_known_group_in_input_order():
+    row = {
+        "reject_groups": "chip_pcb | electrical_power | remote_control_device",
+        "warning_groups": "",
+        "reject_terms": "",
+        "warning_terms": "",
+    }
+
+    assert build_reason_zh(row) == "电子控制或芯片类"
+
+
+def test_build_reason_zh_falls_back_to_terms_when_group_missing():
+    row = {
+        "reject_groups": "",
+        "warning_groups": "",
+        "reject_terms": "relay module | sensor",
+        "warning_terms": "",
+    }
+
+    assert build_reason_zh(row) == "电子元件或控制器类"

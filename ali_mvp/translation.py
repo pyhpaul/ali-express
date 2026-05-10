@@ -1,13 +1,32 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 
-REASON_ZH_RULES = (
-    ({"battery", "lithium", "charger", "power adapter"}, "带电供电类"),
-    ({"remote control", "controller", "pcb", "chip", "pcba"}, "电子控制或芯片类"),
-    ({"sensor", "ignition", "timer switch", "relay module"}, "电子元件或控制器类"),
+REASON_ZH_GROUP_RULES = (
+    ("electrical_power", "带电供电类"),
+    ("relay_switch_sensor", "电子元件或控制器类"),
+    ("chip_pcb", "电子控制或芯片类"),
+    ("remote_control_device", "遥控控制类"),
+    ("ignition_control", "点火控制类"),
+    ("medical_therapy", "治疗理疗设备类"),
+    ("steam_cleaner_device", "整机清洁设备类"),
+    ("beauty_device", "美容仪器设备类"),
+    ("appliance_timer_switch", "定时控制类"),
+)
+
+REASON_ZH_TERM_RULES = (
+    ({"battery", "lithium", "charger", "power adapter", "power bank", "power supply", "rechargeable"}, "带电供电类"),
+    ({"remote control", "controller", "pcb", "chip", "pcba", "remote control socket", "gsm gate opener", "relay module", "smart switch", "wifi switch", "zigbee switch"}, "电子元件或控制器类"),
+    ({"sensor", "ignition", "timer switch", "relay module", "timing switch", "timer knob", "rotary knob timer"}, "电子元件或控制器类"),
+    ({"universal remote control", "air conditioner remote control", "ac remote control", "remote control"}, "遥控控制类"),
+    ({"pulse igniter", "gas stove igniter", "igniter"}, "点火控制类"),
+    ({"massager", "therapy", "light therapy", "rehabilitation", "stimulation"}, "治疗理疗设备类"),
+    ({"steam cleaner"}, "整机清洁设备类"),
+    ({"beauty machine", "facial beauty", "electroporation", "skin strengthening"}, "美容仪器设备类"),
+    ({"timer switch", "timing switch", "rotary knob timer", "timer knob"}, "定时控制类"),
 )
 
 
@@ -25,19 +44,43 @@ def summarize_attributes_text(raw_text: str, limit: int = 3) -> str:
     return "; ".join(parts)
 
 
-def build_reason_zh(row: dict[str, str]) -> str:
+def _split_rule_values(raw_value: str) -> list[str]:
+    if not raw_value:
+        return []
+    return [part.strip().lower() for part in re.split(r"[|,;\n]+", raw_value) if part.strip()]
+
+
+def _build_reason_from_groups(row: dict[str, str]) -> str:
+    groups = _split_rule_values(row.get("reject_groups", "")) + _split_rule_values(row.get("warning_groups", ""))
+    group_to_label = dict(REASON_ZH_GROUP_RULES)
+    for group in groups:
+        if group in group_to_label:
+            return group_to_label[group]
+    return ""
+
+
+def _build_reason_from_terms(row: dict[str, str]) -> str:
     haystack = " | ".join(
         part
         for part in (
             row.get("reject_terms", ""),
             row.get("warning_terms", ""),
-            row.get("reject_groups", ""),
         )
         if part
     ).lower()
-    for terms, label in REASON_ZH_RULES:
+    for terms, label in REASON_ZH_TERM_RULES:
         if any(term in haystack for term in terms):
             return label
+    return ""
+
+
+def build_reason_zh(row: dict[str, str]) -> str:
+    group_reason = _build_reason_from_groups(row)
+    if group_reason:
+        return group_reason
+    term_reason = _build_reason_from_terms(row)
+    if term_reason:
+        return term_reason
     return "未命中中文规则说明"
 
 
