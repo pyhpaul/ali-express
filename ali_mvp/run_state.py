@@ -66,7 +66,7 @@ class RunState:
     seen_product_keys: list[str] = field(default_factory=list)
     accepted_products: list[ProductRecord] = field(default_factory=list)
     audit_rows: list[dict[str, Any]] = field(default_factory=list)
-    pending_detail_queue: list[str] = field(default_factory=list)
+    pending_detail_queue: list[dict[str, Any]] = field(default_factory=list)
     current_proxy_index: int = 0
     block_events_on_current_proxy: int = 0
     last_block_reason: str = ""
@@ -84,7 +84,7 @@ class RunState:
             seen_product_keys=list(payload.get("seen_product_keys", [])),
             accepted_products=[_deserialize_product_record(item) for item in payload.get("accepted_products", [])],
             audit_rows=list(payload.get("audit_rows", [])),
-            pending_detail_queue=list(payload.get("pending_detail_queue", [])),
+            pending_detail_queue=_deserialize_pending_detail_queue(payload.get("pending_detail_queue", [])),
             current_proxy_index=payload.get("current_proxy_index", 0),
             block_events_on_current_proxy=payload.get("block_events_on_current_proxy", 0),
             last_block_reason=payload.get("last_block_reason", ""),
@@ -102,7 +102,7 @@ class RunState:
             "seen_product_keys": list(self.seen_product_keys),
             "accepted_products": [asdict(product) for product in self.accepted_products],
             "audit_rows": list(self.audit_rows),
-            "pending_detail_queue": list(self.pending_detail_queue),
+            "pending_detail_queue": [dict(item) for item in self.pending_detail_queue],
             "current_proxy_index": self.current_proxy_index,
             "block_events_on_current_proxy": self.block_events_on_current_proxy,
             "last_block_reason": self.last_block_reason,
@@ -162,6 +162,26 @@ def _deserialize_product_record(payload: ProductRecord | dict[str, Any]) -> Prod
     if isinstance(payload, ProductRecord):
         return payload
     return ProductRecord(**payload)
+
+
+def _deserialize_pending_detail_queue(payload: Any) -> list[dict[str, Any]]:
+    queue: list[dict[str, Any]] = []
+    if not isinstance(payload, list):
+        return queue
+    for item in payload:
+        if isinstance(item, dict):
+            queue.append(dict(item))
+            continue
+        url = str(item or "")
+        if not url:
+            continue
+        queue.append(
+            {
+                "url": url,
+                "resolvedProductUrl": url,
+            }
+        )
+    return queue
 
 
 def _normalize_browser_hardening(value: Any) -> str:

@@ -64,7 +64,12 @@ def test_run_state_store_round_trip_json_files(tmp_path):
         seen_product_keys=["sku-1", "sku-2"],
         accepted_products=[_build_product_record()],
         audit_rows=[{"filter_decision": "accepted"}],
-        pending_detail_queue=["https://example.test/item/2.html"],
+        pending_detail_queue=[
+            {
+                "url": "https://example.test/item/2.html",
+                "resolvedProductUrl": "https://example.test/item/2.html",
+            }
+        ],
         current_proxy_index=1,
         block_events_on_current_proxy=0,
         last_block_reason="",
@@ -93,7 +98,12 @@ def test_run_state_to_summary_marks_blocked_runs(tmp_path):
         seen_product_keys=["sku-1"],
         accepted_products=[_build_product_record()],
         audit_rows=[],
-        pending_detail_queue=["https://example.test/item/9.html"],
+        pending_detail_queue=[
+            {
+                "url": "https://example.test/item/9.html",
+                "resolvedProductUrl": "https://example.test/item/9.html",
+            }
+        ],
         current_proxy_index=2,
         block_events_on_current_proxy=1,
         last_block_reason="captcha_blocked",
@@ -143,6 +153,32 @@ def test_load_manifest_defaults_browser_hardening_to_off(tmp_path):
     store.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
     assert store.load_manifest().browser_hardening == "off"
+
+
+def test_load_state_upgrades_legacy_pending_detail_queue_urls_to_dicts(tmp_path):
+    store = RunStateStore(tmp_path)
+    payload = {
+        "status": "blocked",
+        "current_listing_page": 2,
+        "pending_detail_queue": [
+            "https://example.test/item/1.html",
+            "https://example.test/item/2.html",
+        ],
+    }
+    store.state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    state = store.load_state()
+
+    assert state.pending_detail_queue == [
+        {
+            "url": "https://example.test/item/1.html",
+            "resolvedProductUrl": "https://example.test/item/1.html",
+        },
+        {
+            "url": "https://example.test/item/2.html",
+            "resolvedProductUrl": "https://example.test/item/2.html",
+        },
+    ]
 
 
 def test_run_state_to_summary_marks_failed_runs_resume_recommended(tmp_path):

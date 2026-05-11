@@ -1,27 +1,15 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 import re
 from urllib.parse import quote_plus
 from urllib.parse import urlparse
 
-from .browser import (
-    _attach_listing_context,
-    advance_listing_page,
-    collect_listing_page_products,
-    collect_raw_products,
-    dedupe_listing_products,
-    enrich_listing_products,
-    open_listing_page,
-)
-from .extractor import normalize_products
-from .filtering import FilterGroup, filter_products, load_filter_groups, prefilter_listing_products
-from .output import REVIEW_FIELDS, write_dict_csv, write_filter_audit_csv, write_products_csv, write_rank_csv
-from .scoring import aggregate_rank
-from .review import build_review_rows
+from .filtering import load_filter_groups
+from . import scrape_runner
+from .run_state import RunManifest, RunStateStore
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -89,6 +77,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional email sent to MyMemory as the de parameter.",
     )
     postprocess.set_defaults(func=run_postprocess)
+    resume = subparsers.add_parser(
+        "resume",
+        help="Resume a previously blocked scrape run.",
+    )
+    resume.add_argument(
+        "--run-dir",
+        required=True,
+        help="Existing scrape run directory containing run manifest/state.",
+    )
+    resume.add_argument(
+        "--details-only",
+        action="store_true",
+        help="Only resume pending detail enrichment without continuing listing collection.",
+    )
+    resume.set_defaults(func=run_resume)
     return parser
 
 
@@ -115,84 +118,11 @@ def run_postprocess(args: argparse.Namespace) -> int:
     return 0
 
 
-def _collect_products_with_blacklist(
-    *,
-    url: str,
-    max_items: int,
-    source_type: str,
-    source_value: str,
-    scraped_at: str,
-    groups: list[FilterGroup],
-    user_data_dir: str,
-    port: int,
-    enrich_detail: bool,
-    pages: int | None,
-    browser_hardening: str = "minimal",
-) -> tuple[list[object], list[dict[str, str]], int, int]:
-    page = open_listing_page(
-        url,
-        user_data_dir=user_data_dir,
-        port=port,
-        browser_hardening=browser_hardening,
-    )
-    accepted_products = []
-    audit_rows: list[dict[str, str]] = []
-    seen_keys: set[str] = set()
-    current_page = 1
-    raw_products_count = 0
-    normalized_count = 0
-
-    while len(accepted_products) < max_items:
-        current_raw = collect_listing_page_products(page)
-        page_products = dedupe_listing_products(current_raw, seen_keys)
-        raw_products_count += len(page_products)
-        listing_survivors, listing_audit = prefilter_listing_products(
-            page_products,
-            groups,
-            source_type=source_type,
-            source_value=source_value,
-        )
-        audit_rows.extend(listing_audit)
-
-        if enrich_detail and listing_survivors:
-            _attach_listing_context(
-                listing_survivors,
-                base_url=url,
-                page_url=str(getattr(page, "url", "") or url),
-                page_number=current_page,
-            )
-            enrich_listing_products(page, listing_survivors)
-
-        normalized = normalize_products(
-            listing_survivors,
-            source_type=source_type,
-            source_value=source_value,
-            scraped_at=scraped_at,
-        )
-        normalized_count += len(normalized)
-        page_accepted, page_audit = filter_products(normalized, groups)
-
-        remaining = max_items - len(accepted_products)
-        accepted_products.extend(page_accepted[:remaining])
-
-        accepted_audit_count = 0
-        for row in page_audit:
-            if row["filter_decision"] == "accepted":
-                if accepted_audit_count >= remaining:
-                    continue
-                accepted_audit_count += 1
-            audit_rows.append(row)
-
-        if len(accepted_products) >= max_items:
-            break
-        if pages is not None and current_page >= pages:
-            break
-        next_page = current_page + 1
-        if not advance_listing_page(page, next_page):
-            break
-        current_page = next_page
-
-    return accepted_products, audit_rows, raw_products_count, normalized_count
+def run_resume(args: argparse.Namespace) -> int:
+    result = scrape_runner.resume_scrape(Path(args.run_dir), details_only=args.details_only)
+    print(f"Resumed run: {Path(args.run_dir)}")
+    print(f"Accepted products: {result.accepted_count}")
+    return result.exit_code
 
 
 def run_scrape(args: argparse.Namespace) -> int:
@@ -205,60 +135,42 @@ def run_scrape(args: argparse.Namespace) -> int:
 
     run_at = datetime.now().replace(microsecond=0)
     scraped_at = run_at.astimezone(timezone.utc).isoformat()
+    run_dir = build_output_dir(Path(args.output_dir), source_type=source_type, source_value=source_value, run_at=run_at)
+    manifest = RunManifest(
+        source_type=source_type,
+        source_value=source_value,
+        url=url,
+        max_items=args.max_items,
+        pages=args.pages,
+        output_dir=str(run_dir),
+        user_data_dir=args.user_data_dir,
+        port=args.port,
+        enrich_detail=args.enrich_detail,
+        blacklist_file=args.blacklist_file,
+        reject_keyword=list(args.reject_keyword),
+        browser_hardening=browser_hardening,
+        created_at=scraped_at,
+    )
     groups = load_filter_groups(args.blacklist_file, args.reject_keyword)
 
-    if groups:
-        accepted_products, audit_rows, raw_products_count, normalized_count = _collect_products_with_blacklist(
-            url=url,
-            max_items=args.max_items,
-            source_type=source_type,
-            source_value=source_value,
-            scraped_at=scraped_at,
-            groups=groups,
-            user_data_dir=args.user_data_dir,
-            port=args.port,
-            enrich_detail=args.enrich_detail,
-            pages=args.pages,
-            browser_hardening=browser_hardening,
-        )
-    else:
-        raw_products = collect_raw_products(
-            url,
-            args.max_items,
-            user_data_dir=args.user_data_dir,
-            port=args.port,
-            enrich_detail=args.enrich_detail,
-            pages=args.pages,
-            browser_hardening=browser_hardening,
-        )
-        products = normalize_products(
-            raw_products,
-            source_type=source_type,
-            source_value=source_value,
-            scraped_at=scraped_at,
-        )
-        accepted_products, audit_rows = filter_products(products, groups)
-        raw_products_count = len(raw_products)
-        normalized_count = len(products)
+    result = scrape_runner.run_new_scrape(
+        manifest=manifest,
+        groups=groups,
+        run_dir=run_dir,
+    )
 
-    output_dir = build_output_dir(Path(args.output_dir), source_type=source_type, source_value=source_value, run_at=run_at)
-    write_products_csv(output_dir / "products.csv", accepted_products)
-    write_filter_audit_csv(output_dir / "products_filter_audit.csv", audit_rows)
-    review_rows = build_review_rows([asdict(product) for product in accepted_products], audit_rows)
-    write_dict_csv(output_dir / "products_review.csv", REVIEW_FIELDS, review_rows)
-    write_rank_csv(output_dir / "category_rank.csv", aggregate_rank(accepted_products))
-
-    print(f"Scraped raw items: {raw_products_count}")
-    print(f"Normalized products: {normalized_count}")
-    print(f"Accepted products: {len(accepted_products)}")
-    print(f"Wrote: {output_dir / 'products.csv'}")
-    print(f"Wrote: {output_dir / 'products_filter_audit.csv'}")
-    print(f"Wrote: {output_dir / 'products_review.csv'}")
-    print(f"Wrote: {output_dir / 'category_rank.csv'}")
-    if not accepted_products:
+    state = _load_run_state_if_present(run_dir)
+    if state is not None:
+        print(f"Scraped raw items: {state.raw_products_count}")
+        print(f"Normalized products: {state.normalized_count}")
+    print(f"Accepted products: {result.accepted_count}")
+    print(f"Wrote: {run_dir / 'products.csv'}")
+    print(f"Wrote: {run_dir / 'products_filter_audit.csv'}")
+    print(f"Wrote: {run_dir / 'products_review.csv'}")
+    print(f"Wrote: {run_dir / 'category_rank.csv'}")
+    if result.exit_code == 2:
         print("No accepted products extracted. Check login state, CAPTCHA, selector changes, or blacklist rules.")
-        return 2
-    return 0
+    return result.exit_code
 
 
 def _build_search_url(keyword: str) -> str:
@@ -271,6 +183,13 @@ def _resolve_source(args: argparse.Namespace) -> tuple[str, str, str]:
     if args.category_url:
         return "category", args.category_url, args.category_url
     return "url", args.url, args.url
+
+
+def _load_run_state_if_present(run_dir: Path):
+    store = RunStateStore(run_dir)
+    if not store.state_path.exists():
+        return None
+    return store.load_state()
 
 
 def build_output_dir(base_dir: Path, *, source_type: str, source_value: str, run_at: datetime) -> Path:

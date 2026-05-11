@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from ali_mvp.cli import build_output_dir, build_parser, run_postprocess, run_scrape
+from ali_mvp.cli import build_output_dir, build_parser, run_postprocess, run_resume, run_scrape
+from ali_mvp.filtering import FilterGroup
 
 
 def test_scrape_parser_defaults_pages_to_none():
@@ -129,6 +130,43 @@ def test_parser_binds_handlers_for_scrape_and_postprocess():
     assert post_args.func is run_postprocess
 
 
+def test_resume_parser_accepts_run_dir_and_details_only():
+    parser = build_parser()
+
+    args = parser.parse_args(["resume", "--run-dir", "data/run-1", "--details-only"])
+
+    assert args.run_dir == "data/run-1"
+    assert args.details_only is True
+    assert args.func is run_resume
+
+
+def test_run_resume_delegates_to_scrape_runner(monkeypatch, tmp_path, capsys):
+    from ali_mvp import cli
+    from ali_mvp.scrape_runner import RunResult
+
+    seen: dict[str, object] = {}
+
+    def fake_resume_scrape(run_dir: Path, *, details_only: bool):
+        seen["run_dir"] = run_dir
+        seen["details_only"] = details_only
+        return RunResult(exit_code=0, accepted_count=7, blocked=False)
+
+    monkeypatch.setattr("ali_mvp.scrape_runner.resume_scrape", fake_resume_scrape)
+
+    args = argparse.Namespace(run_dir=str(tmp_path / "run-1"), details_only=True)
+
+    code = cli.run_resume(args)
+    output = capsys.readouterr().out
+
+    assert code == 0
+    assert seen == {
+        "run_dir": tmp_path / "run-1",
+        "details_only": True,
+    }
+    assert f"Resumed run: {tmp_path / 'run-1'}" in output
+    assert "Accepted products: 7" in output
+
+
 def test_run_postprocess_writes_review_zh_and_html(monkeypatch, tmp_path):
     from ali_mvp import cli
     from ali_mvp.output import read_csv_rows
@@ -225,10 +263,10 @@ def test_scrape_parser_rejects_removed_detail_rating_flags():
         parser.parse_args(["scrape", "--keyword", "women dress", "--detail-limit", "3"])
 
 
-def test_run_scrape_filters_products_before_writing_outputs(monkeypatch, tmp_path):
+def test_run_scrape_builds_manifest_and_delegates_to_runner(monkeypatch, tmp_path, capsys):
     from ali_mvp import cli
-    from ali_mvp.scoring import ProductRecord
 
+    fixed_now = datetime.fromisoformat("2026-05-11T08:00:00+00:00")
     args = argparse.Namespace(
         keyword="home appliance accessories",
         url=None,
@@ -244,79 +282,60 @@ def test_run_scrape_filters_products_before_writing_outputs(monkeypatch, tmp_pat
         browser_hardening="minimal",
     )
 
-    product = ProductRecord(
-        source_type="keyword",
-        source_value="home appliance accessories",
-        title="Battery charger board",
-        price="$1.00",
-        sold_count=0,
-        rating=0.0,
-        review_count=0,
-        product_url="https://example.test/item",
-        search_card_url="https://example.test/item",
-        image_url="https://example.test/item.jpg",
-        entry_type="item_card",
-        is_promoted=False,
-        promo_channel="",
-        promotion_text="",
-        promo_landing_url="",
-        shop_name="",
-        shipping_text="",
-        detail_rating=0.0,
-        detail_review_count=0,
-        breadcrumb="",
-        attributes_text="",
-        description_text="",
-        scraped_at="2026-05-09T00:00:00Z",
-    )
+    class FakeDateTime:
+        @classmethod
+        def now(cls):
+            return fixed_now
 
-    captured: dict[str, list[object]] = {}
+    seen: dict[str, object] = {}
 
-    monkeypatch.setattr(cli, "collect_raw_products", lambda *a, **k: [{"title": product.title, "url": product.product_url}])
-    monkeypatch.setattr(cli, "normalize_products", lambda *a, **k: [product])
-    monkeypatch.setattr(cli, "load_filter_groups", lambda path, keywords: [])
+    def fake_run_new_scrape(*, manifest, groups, run_dir):
+        seen["manifest"] = manifest
+        seen["groups"] = groups
+        seen["run_dir"] = run_dir
+        run_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("products.csv", "products_filter_audit.csv", "products_review.csv", "category_rank.csv"):
+            (run_dir / name).write_text("", encoding="utf-8")
+        return cli.scrape_runner.RunResult(exit_code=0, accepted_count=4, blocked=False)
+
+    monkeypatch.setattr(cli, "datetime", FakeDateTime)
     monkeypatch.setattr(
         cli,
-        "filter_products",
-        lambda products, groups: (
-            [],
-            [
-                {
-                    "source_type": product.source_type,
-                    "source_value": product.source_value,
-                    "title": product.title,
-                    "product_url": product.product_url,
-                    "filter_decision": "rejected",
-                    "reject_groups": "cli_extra",
-                    "reject_terms": "battery",
-                    "reject_fields": "title",
-                    "warning_groups": "",
-                    "warning_terms": "",
-                    "warning_fields": "",
-                }
-            ],
-        ),
+        "load_filter_groups",
+        lambda path, keywords: [FilterGroup(name="cli_extra", post_reject_terms=("battery",))],
     )
-    monkeypatch.setattr(cli, "write_products_csv", lambda path, products: captured.setdefault("products", list(products)))
-    monkeypatch.setattr(cli, "write_rank_csv", lambda path, rows: captured.setdefault("rank", list(rows)))
-    monkeypatch.setattr(cli, "write_filter_audit_csv", lambda path, rows: captured.setdefault("audit", list(rows)))
-    monkeypatch.setattr(cli, "write_dict_csv", lambda path, fieldnames, rows: captured.setdefault("review", list(rows)))
+    monkeypatch.setattr(cli.scrape_runner, "run_new_scrape", fake_run_new_scrape)
 
     code = cli.run_scrape(args)
+    output = capsys.readouterr().out
 
-    assert code == 2
-    assert captured["products"] == []
-    assert captured["audit"][0]["filter_decision"] == "rejected"
-    assert captured["review"][0]["title"] == product.title
+    assert code == 0
+    assert seen["manifest"].source_type == "keyword"
+    assert seen["manifest"].source_value == "home appliance accessories"
+    assert seen["manifest"].url == "https://www.aliexpress.com/wholesale?SearchText=home+appliance+accessories"
+    assert seen["manifest"].created_at == "2026-05-11T08:00:00+00:00"
+    assert seen["manifest"].browser_hardening == "minimal"
+    assert seen["manifest"].reject_keyword == ["battery"]
+    assert seen["groups"] == [FilterGroup(name="cli_extra", post_reject_terms=("battery",))]
+    assert seen["run_dir"] == build_output_dir(
+        Path(tmp_path),
+        source_type="keyword",
+        source_value="home appliance accessories",
+        run_at=fixed_now,
+    )
+    assert "Accepted products: 4" in output
+    assert f"Wrote: {seen['run_dir'] / 'products.csv'}" in output
 
 
-def test_run_scrape_passes_browser_hardening_to_collectors(monkeypatch, tmp_path):
+def test_run_scrape_passes_browser_hardening_and_category_source_into_runner_manifest(monkeypatch, tmp_path):
     from ali_mvp import cli
 
+    fixed_now = datetime.fromisoformat("2026-05-11T08:00:00+00:00")
+    category_url = "https://www.aliexpress.com/category/100003109/women-clothing.html"
     args = argparse.Namespace(
-        keyword="women dress",
+        keyword=None,
         url=None,
-        category_url=None,
+        category_url=category_url,
         max_items=1,
         output_dir=str(tmp_path),
         user_data_dir=".browser-profile",
@@ -327,188 +346,123 @@ def test_run_scrape_passes_browser_hardening_to_collectors(monkeypatch, tmp_path
         reject_keyword=[],
         browser_hardening="minimal",
     )
+
+    class FakeDateTime:
+        @classmethod
+        def now(cls):
+            return fixed_now
+
     seen: dict[str, object] = {}
 
+    def fake_run_new_scrape(*, manifest, groups, run_dir):
+        seen["manifest"] = manifest
+        seen["run_dir"] = run_dir
+        run_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("products.csv", "products_filter_audit.csv", "products_review.csv", "category_rank.csv"):
+            (run_dir / name).write_text("", encoding="utf-8")
+        return cli.scrape_runner.RunResult(exit_code=0, accepted_count=1, blocked=False)
+
+    monkeypatch.setattr(cli, "datetime", FakeDateTime)
     monkeypatch.setattr(cli, "load_filter_groups", lambda path, keywords: [])
-    monkeypatch.setattr(
-        cli,
-        "collect_raw_products",
-        lambda *a, **k: seen.setdefault("hardening", k.get("browser_hardening")) or [],
-    )
-    monkeypatch.setattr(cli, "normalize_products", lambda *a, **k: [])
-    monkeypatch.setattr(cli, "filter_products", lambda products, groups: ([], []))
-    monkeypatch.setattr(cli, "write_products_csv", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "write_filter_audit_csv", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "write_dict_csv", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "write_rank_csv", lambda *a, **k: None)
+    monkeypatch.setattr(cli.scrape_runner, "run_new_scrape", fake_run_new_scrape)
 
     cli.run_scrape(args)
 
-    assert seen["hardening"] == "minimal"
+    assert seen["manifest"].browser_hardening == "minimal"
+    assert seen["manifest"].source_type == "category"
+    assert seen["manifest"].source_value == category_url
+    assert seen["manifest"].url == category_url
+    assert seen["run_dir"] == build_output_dir(
+        Path(tmp_path),
+        source_type="category",
+        source_value=category_url,
+        run_at=fixed_now,
+    )
 
 
-def test_run_scrape_with_blacklist_reaches_accept_target_from_local_page_replay(monkeypatch, tmp_path):
+def test_run_scrape_run_dir_manifest_can_be_consumed_by_run_resume(monkeypatch, tmp_path, capsys):
     from ali_mvp import cli
+    from ali_mvp.run_state import RunState, RunStateStore
 
-    pages = [
-        [
-            {"title": "Portable battery charger board", "url": "https://example.test/item/3001.html"},
-            {"title": "Washing machine anti-vibration stand", "url": "https://example.test/item/3002.html"},
-        ],
-        [
-            {"title": "Dryer timer replacement housing", "url": "https://example.test/item/3003.html"},
-            {"title": "Shock pad support foot", "url": "https://example.test/item/3004.html"},
-        ],
-    ]
-    page_index = {"value": 0}
-    captured: dict[str, list[object]] = {}
-
+    fixed_now = datetime.fromisoformat("2026-05-11T08:00:00+00:00")
     args = argparse.Namespace(
-        keyword="home appliance accessories",
+        keyword="women dress",
         url=None,
         category_url=None,
-        max_items=2,
+        max_items=20,
         output_dir=str(tmp_path),
         user_data_dir=".browser-profile",
         port=9333,
         enrich_detail=True,
         pages=None,
-        blacklist_file="rules/product_blacklist.json",
+        blacklist_file=None,
         reject_keyword=[],
-    )
-
-    class FakePage:
-        url = "https://www.aliexpress.com/wholesale?SearchText=home+appliance+accessories"
-
-    monkeypatch.setattr(cli, "open_listing_page", lambda *a, **k: FakePage())
-    monkeypatch.setattr(
-        cli,
-        "collect_listing_page_products",
-        lambda page, scroll_rounds=8: deepcopy(pages[page_index["value"]]),
-    )
-    monkeypatch.setattr(cli, "dedupe_listing_products", lambda products, seen_keys: products)
-
-    def fake_advance(page, target_page):
-        if page_index["value"] >= len(pages) - 1:
-            return False
-        page_index["value"] += 1
-        return True
-
-    monkeypatch.setattr(cli, "advance_listing_page", fake_advance)
-
-    def fake_enrich(page, products):
-        for product in products:
-            if product["title"] == "Dryer timer replacement housing":
-                product["attributesText"] = '{"Control":"relay module"}'
-            if product["title"] == "Washing machine anti-vibration stand":
-                product["descriptionText"] = "Compatible with battery powered washers."
-
-    monkeypatch.setattr(cli, "enrich_listing_products", fake_enrich)
-    monkeypatch.setattr(
-        cli,
-        "load_filter_groups",
-        lambda path, keywords: [
-            cli.FilterGroup(
-                name="electrical_power",
-                pre_reject_terms=("charger",),
-                post_reject_terms=("battery",),
-            ),
-            cli.FilterGroup(
-                name="relay_switch_sensor",
-                pre_reject_terms=(),
-                post_reject_terms=("relay module",),
-            ),
-        ],
-    )
-    monkeypatch.setattr(cli, "write_products_csv", lambda path, products: captured.setdefault("products", list(products)))
-    monkeypatch.setattr(cli, "write_rank_csv", lambda path, rows: captured.setdefault("rank", list(rows)))
-    monkeypatch.setattr(cli, "write_filter_audit_csv", lambda path, rows: captured.setdefault("audit", list(rows)))
-
-    code = cli.run_scrape(args)
-
-    assert code == 0
-    assert [product.title for product in captured["products"]] == [
-        "Washing machine anti-vibration stand",
-        "Shock pad support foot",
-    ]
-    assert [row["filter_stage"] for row in captured["audit"]] == [
-        "listing_title",
-        "accepted",
-        "detail_post_enrich",
-        "accepted",
-    ]
-
-
-def test_collect_products_with_blacklist_attaches_listing_context_before_detail_enrichment(monkeypatch):
-    from ali_mvp import cli
-
-    base_url = "https://www.aliexpress.com/wholesale?SearchText=home+appliance+accessories"
-    page_urls = [
-        base_url,
-        f"{base_url}&page=2",
-    ]
-    pages = [
-        [{"title": "Shock pad page 1", "url": "https://example.test/item/3001.html"}],
-        [{"title": "Shock pad page 2", "url": "https://example.test/item/3002.html"}],
-    ]
-    page_index = {"value": 0}
-    captured_contexts: list[list[tuple[str, str, int]]] = []
-
-    class FakePage:
-        def __init__(self):
-            self.url = page_urls[0]
-
-    monkeypatch.setattr(cli, "open_listing_page", lambda *a, **k: FakePage())
-    monkeypatch.setattr(
-        cli,
-        "collect_listing_page_products",
-        lambda page, scroll_rounds=8: deepcopy(pages[page_index["value"]]),
-    )
-    monkeypatch.setattr(cli, "dedupe_listing_products", lambda products, seen_keys: products)
-    monkeypatch.setattr(cli, "prefilter_listing_products", lambda products, groups, source_type, source_value: (products, []))
-    monkeypatch.setattr(cli, "normalize_products", lambda *a, **k: [])
-    monkeypatch.setattr(cli, "filter_products", lambda products, groups: ([], []))
-
-    def fake_advance(page, target_page):
-        if page_index["value"] >= len(pages) - 1:
-            return False
-        page_index["value"] += 1
-        page.url = page_urls[page_index["value"]]
-        return True
-
-    def fake_enrich(page, products):
-        captured_contexts.append(
-            [
-                (
-                    product["_listingBaseUrl"],
-                    product["_listingPageUrl"],
-                    product["_listingPageNumber"],
-                )
-                for product in products
-            ]
-        )
-
-    monkeypatch.setattr(cli, "advance_listing_page", fake_advance)
-    monkeypatch.setattr(cli, "enrich_listing_products", fake_enrich)
-
-    cli._collect_products_with_blacklist(
-        url=base_url,
-        max_items=5,
-        source_type="keyword",
-        source_value="home appliance accessories",
-        scraped_at="2026-05-10T00:00:00Z",
-        groups=[],
-        user_data_dir=".browser-profile",
-        port=9333,
-        enrich_detail=True,
-        pages=2,
         browser_hardening="minimal",
     )
 
-    assert captured_contexts == [
-        [(base_url, page_urls[0], 1)],
-        [(base_url, page_urls[1], 2)],
+    class FakeDateTime:
+        @classmethod
+        def now(cls):
+            return fixed_now
+
+    seen: dict[str, object] = {}
+
+    def fake_run_new_scrape(*, manifest, groups, run_dir):
+        seen["run_dir"] = run_dir
+        store = RunStateStore(run_dir)
+        blocked_state = RunState(
+            status="blocked",
+            current_listing_page=1,
+            pending_detail_queue=[
+                {
+                    "url": "https://www.aliexpress.com/item/1001.html",
+                    "resolvedProductUrl": "https://www.aliexpress.com/item/1001.html",
+                }
+            ],
+            last_block_reason="captcha_blocked",
+            last_blocked_url="https://www.aliexpress.com/item/1001.html",
+        )
+        store.save_manifest(manifest)
+        store.save_state(blocked_state)
+        store.save_summary(blocked_state)
+        for name in ("products.csv", "products_filter_audit.csv", "products_review.csv", "category_rank.csv"):
+            (run_dir / name).write_text("", encoding="utf-8")
+        return cli.scrape_runner.RunResult(exit_code=3, accepted_count=0, blocked=True)
+
+    def fake_resume_scrape(run_dir: Path, *, details_only: bool):
+        store = RunStateStore(run_dir)
+        seen["resume_manifest"] = store.load_manifest()
+        seen["resume_state"] = store.load_state()
+        seen["resume_details_only"] = details_only
+        return cli.scrape_runner.RunResult(exit_code=0, accepted_count=1, blocked=False)
+
+    monkeypatch.setattr(cli, "datetime", FakeDateTime)
+    monkeypatch.setattr(cli, "load_filter_groups", lambda path, keywords: [])
+    monkeypatch.setattr(cli.scrape_runner, "run_new_scrape", fake_run_new_scrape)
+    monkeypatch.setattr(cli.scrape_runner, "resume_scrape", fake_resume_scrape)
+
+    scrape_code = cli.run_scrape(args)
+    scrape_output = capsys.readouterr().out
+
+    resume_code = cli.run_resume(argparse.Namespace(run_dir=str(seen["run_dir"]), details_only=True))
+    resume_output = capsys.readouterr().out
+
+    assert scrape_code == 3
+    assert "Accepted products: 0" in scrape_output
+    assert seen["resume_manifest"].source_type == "keyword"
+    assert seen["resume_manifest"].source_value == "women dress"
+    assert seen["resume_manifest"].created_at == "2026-05-11T08:00:00+00:00"
+    assert seen["resume_state"].status == "blocked"
+    assert seen["resume_state"].pending_detail_queue == [
+        {
+            "url": "https://www.aliexpress.com/item/1001.html",
+            "resolvedProductUrl": "https://www.aliexpress.com/item/1001.html",
+        }
     ]
+    assert seen["resume_details_only"] is True
+    assert resume_code == 0
+    assert f"Resumed run: {seen['run_dir']}" in resume_output
+    assert "Accepted products: 1" in resume_output
 
 
 def test_run_scrape_with_blacklist_reports_full_processed_counts_when_final_page_accepts_are_truncated(
@@ -518,19 +472,7 @@ def test_run_scrape_with_blacklist_reports_full_processed_counts_when_final_page
 ):
     from ali_mvp import cli
 
-    pages = [
-        [
-            {"title": "Portable battery charger board", "url": "https://example.test/item/3001.html"},
-            {"title": "Washing machine anti-vibration stand", "url": "https://example.test/item/3002.html"},
-        ],
-        [
-            {"title": "Dryer timer replacement housing", "url": "https://example.test/item/3003.html"},
-            {"title": "Shock pad support foot", "url": "https://example.test/item/3004.html"},
-            {"title": "Appliance leveling spacer block", "url": "https://example.test/item/3005.html"},
-        ],
-    ]
-    page_index = {"value": 0}
-
+    fixed_now = datetime.fromisoformat("2026-05-11T08:00:00+00:00")
     args = argparse.Namespace(
         keyword="home appliance accessories",
         url=None,
@@ -543,67 +485,43 @@ def test_run_scrape_with_blacklist_reports_full_processed_counts_when_final_page
         pages=None,
         blacklist_file="rules/product_blacklist.json",
         reject_keyword=[],
+        browser_hardening="minimal",
     )
 
-    class FakePage:
-        url = "https://www.aliexpress.com/wholesale?SearchText=home+appliance+accessories"
+    class FakeDateTime:
+        @classmethod
+        def now(cls):
+            return fixed_now
 
-    monkeypatch.setattr(cli, "open_listing_page", lambda *a, **k: FakePage())
-    monkeypatch.setattr(
-        cli,
-        "collect_listing_page_products",
-        lambda page, scroll_rounds=8: deepcopy(pages[page_index["value"]]),
-    )
-    monkeypatch.setattr(cli, "dedupe_listing_products", lambda products, seen_keys: products)
+    def fake_run_new_scrape(*, manifest, groups, run_dir):
+        run_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("products.csv", "products_filter_audit.csv", "products_review.csv", "category_rank.csv"):
+            (run_dir / name).write_text("", encoding="utf-8")
+        return cli.scrape_runner.RunResult(exit_code=0, accepted_count=2, blocked=False)
 
-    def fake_advance(page, target_page):
-        if page_index["value"] >= len(pages) - 1:
-            return False
-        page_index["value"] += 1
-        return True
-
-    monkeypatch.setattr(cli, "advance_listing_page", fake_advance)
-
-    def fake_enrich(page, products):
-        for product in products:
-            if product["title"] == "Dryer timer replacement housing":
-                product["attributesText"] = '{"Control":"relay module"}'
-            if product["title"] == "Washing machine anti-vibration stand":
-                product["descriptionText"] = "Compatible with battery powered washers."
-
-    monkeypatch.setattr(cli, "enrich_listing_products", fake_enrich)
-    monkeypatch.setattr(
-        cli,
-        "load_filter_groups",
-        lambda path, keywords: [
-            cli.FilterGroup(
-                name="electrical_power",
-                pre_reject_terms=("charger",),
-                post_reject_terms=("battery",),
-            ),
-            cli.FilterGroup(
-                name="relay_switch_sensor",
-                pre_reject_terms=(),
-                post_reject_terms=("relay module",),
-            ),
-        ],
-    )
-    monkeypatch.setattr(cli, "write_products_csv", lambda path, products: None)
-    monkeypatch.setattr(cli, "write_rank_csv", lambda path, rows: None)
-    monkeypatch.setattr(cli, "write_filter_audit_csv", lambda path, rows: None)
+    monkeypatch.setattr(cli, "datetime", FakeDateTime)
+    monkeypatch.setattr(cli, "load_filter_groups", lambda path, keywords: [])
+    monkeypatch.setattr(cli.scrape_runner, "run_new_scrape", fake_run_new_scrape)
 
     code = cli.run_scrape(args)
     output = capsys.readouterr().out
 
     assert code == 0
-    assert "Scraped raw items: 5" in output
-    assert "Normalized products: 4" in output
     assert "Accepted products: 2" in output
+    run_dir = build_output_dir(
+        Path(tmp_path),
+        source_type="keyword",
+        source_value="home appliance accessories",
+        run_at=fixed_now,
+    )
+    assert f"Wrote: {run_dir / 'products.csv'}" in output
+    assert f"Wrote: {run_dir / 'products_filter_audit.csv'}" in output
 
 
-def test_run_scrape_with_blacklist_respects_pages_cap_when_accept_target_is_not_met(monkeypatch, tmp_path):
+def test_run_scrape_returns_runner_exit_code_when_no_products_are_accepted(monkeypatch, tmp_path, capsys):
     from ali_mvp import cli
 
+    fixed_now = datetime.fromisoformat("2026-05-11T08:00:00+00:00")
     args = argparse.Namespace(
         keyword="home appliance accessories",
         url=None,
@@ -616,44 +534,30 @@ def test_run_scrape_with_blacklist_respects_pages_cap_when_accept_target_is_not_
         pages=1,
         blacklist_file="rules/product_blacklist.json",
         reject_keyword=[],
+        browser_hardening="minimal",
     )
 
-    class FakePage:
-        url = "https://www.aliexpress.com/wholesale?SearchText=home+appliance+accessories"
+    class FakeDateTime:
+        @classmethod
+        def now(cls):
+            return fixed_now
 
-    captured: dict[str, list[object]] = {}
-    monkeypatch.setattr(cli, "open_listing_page", lambda *a, **k: FakePage())
-    monkeypatch.setattr(
-        cli,
-        "collect_listing_page_products",
-        lambda page, scroll_rounds=8: [
-            {"title": "Portable battery charger board", "url": "https://example.test/item/3001.html"},
-            {"title": "Washing machine anti-vibration stand", "url": "https://example.test/item/3002.html"},
-        ],
-    )
-    monkeypatch.setattr(cli, "dedupe_listing_products", lambda products, seen_keys: products)
-    monkeypatch.setattr(cli, "advance_listing_page", lambda page, target_page: False)
-    monkeypatch.setattr(cli, "enrich_listing_products", lambda page, products: None)
-    monkeypatch.setattr(
-        cli,
-        "load_filter_groups",
-        lambda path, keywords: [
-            cli.FilterGroup(
-                name="electrical_power",
-                pre_reject_terms=("charger",),
-                post_reject_terms=("battery",),
-            )
-        ],
-    )
-    monkeypatch.setattr(cli, "write_products_csv", lambda path, products: captured.setdefault("products", list(products)))
-    monkeypatch.setattr(cli, "write_rank_csv", lambda path, rows: captured.setdefault("rank", list(rows)))
-    monkeypatch.setattr(cli, "write_filter_audit_csv", lambda path, rows: captured.setdefault("audit", list(rows)))
+    def fake_run_new_scrape(*, manifest, groups, run_dir):
+        run_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("products.csv", "products_filter_audit.csv", "products_review.csv", "category_rank.csv"):
+            (run_dir / name).write_text("", encoding="utf-8")
+        return cli.scrape_runner.RunResult(exit_code=2, accepted_count=0, blocked=False)
+
+    monkeypatch.setattr(cli, "datetime", FakeDateTime)
+    monkeypatch.setattr(cli, "load_filter_groups", lambda path, keywords: [])
+    monkeypatch.setattr(cli.scrape_runner, "run_new_scrape", fake_run_new_scrape)
 
     code = cli.run_scrape(args)
+    output = capsys.readouterr().out
 
-    assert code == 0
-    assert [product.title for product in captured["products"]] == ["Washing machine anti-vibration stand"]
-    assert len(captured["audit"]) == 2
+    assert code == 2
+    assert "Accepted products: 0" in output
+    assert "No accepted products extracted." in output
 
 
 def test_build_output_dir_groups_keyword_runs_by_slug_and_timestamp():
