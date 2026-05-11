@@ -118,6 +118,70 @@ def test_run_new_scrape_marks_blocked_run_and_writes_outputs(tmp_path, monkeypat
     assert (tmp_path / "category_rank.csv").exists()
 
 
+def test_run_new_scrape_persists_proxy_progress_and_browser_identity_on_block(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    proxy_file = tmp_path / "proxies.txt"
+    proxy_file.write_text("http://proxy-a:8080\nhttp://proxy-b:8080\n", encoding="utf-8")
+    manifest = replace(
+        _manifest(tmp_path, pages=1, enrich_detail=True),
+        proxy_file=str(proxy_file),
+        max_blocks_per_proxy=1,
+        user_agent="ua-fixed",
+        accept_language="en-US,en;q=0.9",
+    )
+
+    class FakePage:
+        url = "https://www.aliexpress.com/wholesale?SearchText=women+dress"
+
+    open_kwargs: list[dict[str, object]] = []
+    raw_product = {
+        "title": "Dress Proxy",
+        "url": "https://www.aliexpress.com/item/1011.html",
+        "resolvedProductUrl": "https://www.aliexpress.com/item/1011.html",
+    }
+
+    def fake_open_listing_page(url, **kwargs):
+        open_kwargs.append({"url": url, **kwargs})
+        return FakePage()
+
+    def fake_detail(page, product):
+        product["detailStatus"] = "captcha_blocked"
+        return "captcha_blocked"
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", fake_open_listing_page)
+    monkeypatch.setattr(scrape_runner, "collect_listing_page_products", lambda page: [dict(raw_product)])
+    monkeypatch.setattr(scrape_runner, "dedupe_listing_products", lambda products, seen_keys: products)
+    monkeypatch.setattr(
+        scrape_runner,
+        "prefilter_listing_products",
+        lambda raw_products, groups, source_type, source_value: (raw_products, []),
+    )
+    monkeypatch.setattr(scrape_runner, "enrich_single_product_detail", fake_detail)
+
+    result = scrape_runner.run_new_scrape(
+        manifest=manifest,
+        groups=[],
+        run_dir=tmp_path,
+    )
+
+    state = json.loads((tmp_path / "run_state.json").read_text(encoding="utf-8"))
+
+    assert result == scrape_runner.RunResult(exit_code=3, accepted_count=0, blocked=True)
+    assert open_kwargs == [
+        {
+            "url": manifest.url,
+            "user_data_dir": manifest.user_data_dir,
+            "port": manifest.port,
+            "browser_hardening": manifest.browser_hardening,
+            "proxy": "http://proxy-a:8080",
+            "user_agent": "ua-fixed",
+            "accept_language": "en-US,en;q=0.9",
+        }
+    ]
+    assert state["current_proxy_index"] == 1
+    assert state["block_events_on_current_proxy"] == 0
+
+
 def test_run_new_scrape_checkpoints_across_multiple_pages(tmp_path, monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
 
@@ -692,6 +756,83 @@ def test_resume_scrape_details_only_short_circuits_completed_run_without_browser
     assert resumed_state.accepted_count == 1
     assert summary["status"] == "completed"
     assert summary["resume_recommended"] is False
+
+
+def test_resume_scrape_applies_proxy_and_identity_overrides_to_browser_open(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunState, RunStateStore
+
+    manifest = replace(
+        _manifest(tmp_path, pages=1, enrich_detail=True),
+        proxy="http://manifest-proxy:8080",
+        proxy_file="",
+        user_agent="ua-manifest",
+        accept_language="en-US,en;q=0.9",
+    )
+    pending_product = {
+        "title": "Dress Override",
+        "url": "https://www.aliexpress.com/item/2301.html",
+        "cardUrl": "https://www.aliexpress.com/item/2301.html",
+        "resolvedProductUrl": "https://www.aliexpress.com/item/2301.html",
+        "_listingBaseUrl": manifest.url,
+        "_listingPageUrl": manifest.url,
+        "_listingPageNumber": 1,
+    }
+    state = RunState(
+        status="blocked",
+        current_listing_page=1,
+        raw_products_count=1,
+        normalized_count=0,
+        accepted_count=0,
+        seen_product_keys=[pending_product["resolvedProductUrl"]],
+        accepted_products=[],
+        audit_rows=[],
+        pending_detail_queue=[dict(pending_product)],
+        last_block_reason="captcha_blocked",
+        last_blocked_url=pending_product["resolvedProductUrl"],
+    )
+    store = RunStateStore(tmp_path)
+    store.save_manifest(manifest)
+    store.save_state(state)
+    store.save_summary(state)
+
+    class FakePage:
+        url = manifest.url
+
+    open_kwargs: list[dict[str, object]] = []
+
+    def fake_open_listing_page(url, **kwargs):
+        open_kwargs.append({"url": url, **kwargs})
+        return FakePage()
+
+    def fake_detail(page, product):
+        product["detailStatus"] = "detail_enriched"
+        return "detail_enriched"
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", fake_open_listing_page)
+    monkeypatch.setattr(scrape_runner, "enrich_single_product_detail", fake_detail)
+
+    result = scrape_runner.resume_scrape(
+        tmp_path,
+        details_only=True,
+        proxy_override="http://override-proxy:9090",
+        proxy_file_override="",
+        user_agent_override="ua-override",
+        accept_language_override="fr-FR,fr;q=0.9",
+    )
+
+    assert result == scrape_runner.RunResult(exit_code=0, accepted_count=1, blocked=False)
+    assert open_kwargs == [
+        {
+            "url": manifest.url,
+            "user_data_dir": manifest.user_data_dir,
+            "port": manifest.port,
+            "browser_hardening": manifest.browser_hardening,
+            "proxy": "http://override-proxy:9090",
+            "user_agent": "ua-override",
+            "accept_language": "fr-FR,fr;q=0.9",
+        }
+    ]
 
 
 def test_resume_scrape_details_only_normalizes_filters_and_persists_pending_raw_products(tmp_path, monkeypatch):

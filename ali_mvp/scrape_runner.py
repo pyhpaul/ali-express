@@ -15,6 +15,7 @@ from .browser import (
 from .extractor import normalize_products
 from .filtering import FilterGroup, filter_products, load_filter_groups, prefilter_listing_products
 from .output import REVIEW_FIELDS, write_dict_csv, write_filter_audit_csv, write_products_csv, write_rank_csv
+from .proxy_pool import ProxyPool
 from .review import build_review_rows
 from .run_state import RunManifest, RunState, RunStateStore
 from .scoring import ProductRecord, aggregate_rank
@@ -30,25 +31,42 @@ class RunResult:
 def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir: Path) -> RunResult:
     store = RunStateStore(run_dir)
     store.save_manifest(manifest)
+    proxy_pool = ProxyPool.from_sources(
+        proxy=manifest.proxy,
+        proxy_file=manifest.proxy_file,
+        max_blocks_per_proxy=manifest.max_blocks_per_proxy,
+    )
 
     page = open_listing_page(
         manifest.url,
         user_data_dir=manifest.user_data_dir,
         port=manifest.port,
         browser_hardening=manifest.browser_hardening,
+        proxy=proxy_pool.current(),
+        user_agent=manifest.user_agent,
+        accept_language=manifest.accept_language,
     )
     return _run_scrape_from_state(
         manifest=manifest,
         groups=groups,
         run_dir=run_dir,
         store=store,
+        proxy_pool=proxy_pool,
         page=page,
         state=RunState(status="running"),
         start_page=1,
     )
 
 
-def resume_scrape(run_dir: Path, *, details_only: bool = False) -> RunResult:
+def resume_scrape(
+    run_dir: Path,
+    *,
+    details_only: bool = False,
+    proxy_override: str = "",
+    proxy_file_override: str = "",
+    user_agent_override: str = "",
+    accept_language_override: str = "",
+) -> RunResult:
     store = RunStateStore(run_dir)
     manifest = store.load_manifest()
     state = store.load_state()
@@ -76,13 +94,28 @@ def resume_scrape(run_dir: Path, *, details_only: bool = False) -> RunResult:
             blocked=False,
         )
 
+    effective_proxy = proxy_override or manifest.proxy
+    effective_proxy_file = proxy_file_override or manifest.proxy_file
+    effective_user_agent = user_agent_override or manifest.user_agent
+    effective_accept_language = accept_language_override or manifest.accept_language
     groups = load_filter_groups(manifest.blacklist_file, manifest.reject_keyword)
+    proxy_pool = ProxyPool.from_sources(
+        proxy=effective_proxy,
+        proxy_file=effective_proxy_file,
+        max_blocks_per_proxy=manifest.max_blocks_per_proxy,
+    )
+    if proxy_pool.proxies:
+        proxy_pool.current_index = min(state.current_proxy_index, len(proxy_pool.proxies) - 1)
+        proxy_pool.block_events_on_current = state.block_events_on_current_proxy
 
     page = open_listing_page(
         manifest.url,
         user_data_dir=manifest.user_data_dir,
         port=manifest.port,
         browser_hardening=manifest.browser_hardening,
+        proxy=proxy_pool.current(),
+        user_agent=effective_user_agent,
+        accept_language=effective_accept_language,
     )
 
     resumed_state = state
@@ -121,6 +154,7 @@ def resume_scrape(run_dir: Path, *, details_only: bool = False) -> RunResult:
         groups=groups,
         run_dir=run_dir,
         store=store,
+        proxy_pool=proxy_pool,
         page=page,
         state=resumed_state,
         start_page=max(1, resumed_state.current_listing_page + 1),
@@ -215,6 +249,7 @@ def _run_scrape_from_state(
     groups: list[FilterGroup],
     run_dir: Path,
     store: RunStateStore,
+    proxy_pool: ProxyPool,
     page: object,
     state: RunState,
     start_page: int,
@@ -300,9 +335,18 @@ def _run_scrape_from_state(
             accepted_products=list(accepted_products),
             audit_rows=list(audit_rows),
             pending_detail_queue=pending_detail_queue,
+            current_proxy_index=proxy_pool.current_index,
+            block_events_on_current_proxy=proxy_pool.block_events_on_current,
             last_block_reason=last_block_reason,
             last_blocked_url=last_blocked_url,
         )
+        if blocked:
+            proxy_pool.mark_blocked()
+            checkpoint_state = replace(
+                checkpoint_state,
+                current_proxy_index=proxy_pool.current_index,
+                block_events_on_current_proxy=proxy_pool.block_events_on_current,
+            )
         store.save_state(checkpoint_state)
         store.save_summary(checkpoint_state)
 
@@ -329,6 +373,8 @@ def _run_scrape_from_state(
         accepted_products=list(accepted_products),
         audit_rows=list(audit_rows),
         pending_detail_queue=[],
+        current_proxy_index=proxy_pool.current_index,
+        block_events_on_current_proxy=proxy_pool.block_events_on_current,
         last_block_reason="",
         last_blocked_url="",
     )

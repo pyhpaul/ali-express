@@ -55,6 +55,20 @@ def build_parser() -> argparse.ArgumentParser:
         default="minimal",
         help="Apply optional browser pacing/stealth hardening.",
     )
+    scrape.add_argument("--proxy", default="", help="Single proxy URL for this run.")
+    scrape.add_argument("--proxy-file", default="", help="Text file with one proxy per line.")
+    scrape.add_argument(
+        "--max-blocks-per-proxy",
+        type=int,
+        default=2,
+        help="Rotate to the next proxy after this many block events.",
+    )
+    scrape.add_argument("--user-agent", default="", help="Optional fixed browser user agent for the full run.")
+    scrape.add_argument(
+        "--accept-language",
+        default="en-US,en;q=0.9",
+        help="Fixed browser Accept-Language value for the full run.",
+    )
     scrape.set_defaults(func=run_scrape)
     postprocess = subparsers.add_parser(
         "postprocess",
@@ -91,6 +105,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only resume pending detail enrichment without continuing listing collection.",
     )
+    resume.add_argument("--proxy", default="", help="Optional proxy override for the resumed run.")
+    resume.add_argument("--proxy-file", default="", help="Optional proxy list override for the resumed run.")
+    resume.add_argument("--user-agent", default="", help="Optional fixed browser user agent override.")
+    resume.add_argument("--accept-language", default="", help="Optional Accept-Language override.")
     resume.set_defaults(func=run_resume)
     return parser
 
@@ -119,7 +137,14 @@ def run_postprocess(args: argparse.Namespace) -> int:
 
 
 def run_resume(args: argparse.Namespace) -> int:
-    result = scrape_runner.resume_scrape(Path(args.run_dir), details_only=args.details_only)
+    result = scrape_runner.resume_scrape(
+        Path(args.run_dir),
+        details_only=args.details_only,
+        proxy_override=args.proxy,
+        proxy_file_override=args.proxy_file,
+        user_agent_override=args.user_agent,
+        accept_language_override=args.accept_language,
+    )
     print(f"Resumed run: {Path(args.run_dir)}")
     print(f"Accepted products: {result.accepted_count}")
     return result.exit_code
@@ -149,6 +174,11 @@ def run_scrape(args: argparse.Namespace) -> int:
         blacklist_file=args.blacklist_file,
         reject_keyword=list(args.reject_keyword),
         browser_hardening=browser_hardening,
+        proxy=args.proxy,
+        proxy_file=args.proxy_file,
+        max_blocks_per_proxy=args.max_blocks_per_proxy,
+        user_agent=args.user_agent,
+        accept_language=args.accept_language,
         created_at=scraped_at,
     )
     groups = load_filter_groups(args.blacklist_file, args.reject_keyword)

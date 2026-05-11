@@ -81,6 +81,34 @@ def test_scrape_parser_accepts_blacklist_file_and_repeatable_reject_keyword():
     assert args.reject_keyword == ["sensor", "relay"]
 
 
+def test_scrape_parser_accepts_proxy_and_language_options():
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "scrape",
+            "--keyword",
+            "home appliance accessories",
+            "--proxy",
+            "http://127.0.0.1:8080",
+            "--proxy-file",
+            "proxies.txt",
+            "--max-blocks-per-proxy",
+            "2",
+            "--user-agent",
+            "ua-fixed",
+            "--accept-language",
+            "en-US,en;q=0.9",
+        ]
+    )
+
+    assert args.proxy == "http://127.0.0.1:8080"
+    assert args.proxy_file == "proxies.txt"
+    assert args.max_blocks_per_proxy == 2
+    assert args.user_agent == "ua-fixed"
+    assert args.accept_language == "en-US,en;q=0.9"
+
+
 def test_scrape_parser_rejects_invalid_browser_hardening_value():
     parser = build_parser()
 
@@ -140,20 +168,64 @@ def test_resume_parser_accepts_run_dir_and_details_only():
     assert args.func is run_resume
 
 
+def test_resume_parser_accepts_proxy_and_identity_overrides():
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "resume",
+            "--run-dir",
+            "data/run-1",
+            "--proxy",
+            "http://127.0.0.1:8080",
+            "--proxy-file",
+            "proxies.txt",
+            "--user-agent",
+            "ua-fixed",
+            "--accept-language",
+            "en-US,en;q=0.9",
+        ]
+    )
+
+    assert args.proxy == "http://127.0.0.1:8080"
+    assert args.proxy_file == "proxies.txt"
+    assert args.user_agent == "ua-fixed"
+    assert args.accept_language == "en-US,en;q=0.9"
+
+
 def test_run_resume_delegates_to_scrape_runner(monkeypatch, tmp_path, capsys):
     from ali_mvp import cli
     from ali_mvp.scrape_runner import RunResult
 
     seen: dict[str, object] = {}
 
-    def fake_resume_scrape(run_dir: Path, *, details_only: bool):
+    def fake_resume_scrape(
+        run_dir: Path,
+        *,
+        details_only: bool,
+        proxy_override: str,
+        proxy_file_override: str,
+        user_agent_override: str,
+        accept_language_override: str,
+    ):
         seen["run_dir"] = run_dir
         seen["details_only"] = details_only
+        seen["proxy_override"] = proxy_override
+        seen["proxy_file_override"] = proxy_file_override
+        seen["user_agent_override"] = user_agent_override
+        seen["accept_language_override"] = accept_language_override
         return RunResult(exit_code=0, accepted_count=7, blocked=False)
 
     monkeypatch.setattr("ali_mvp.scrape_runner.resume_scrape", fake_resume_scrape)
 
-    args = argparse.Namespace(run_dir=str(tmp_path / "run-1"), details_only=True)
+    args = argparse.Namespace(
+        run_dir=str(tmp_path / "run-1"),
+        details_only=True,
+        proxy="http://127.0.0.1:8080",
+        proxy_file="proxies.txt",
+        user_agent="ua-fixed",
+        accept_language="en-US,en;q=0.9",
+    )
 
     code = cli.run_resume(args)
     output = capsys.readouterr().out
@@ -162,6 +234,10 @@ def test_run_resume_delegates_to_scrape_runner(monkeypatch, tmp_path, capsys):
     assert seen == {
         "run_dir": tmp_path / "run-1",
         "details_only": True,
+        "proxy_override": "http://127.0.0.1:8080",
+        "proxy_file_override": "proxies.txt",
+        "user_agent_override": "ua-fixed",
+        "accept_language_override": "en-US,en;q=0.9",
     }
     assert f"Resumed run: {tmp_path / 'run-1'}" in output
     assert "Accepted products: 7" in output
@@ -247,6 +323,14 @@ def test_run_scrape_rejects_non_positive_pages():
         port=9333,
         enrich_detail=False,
         pages=0,
+        blacklist_file=None,
+        reject_keyword=[],
+        browser_hardening="minimal",
+        proxy="",
+        proxy_file="",
+        max_blocks_per_proxy=2,
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
     )
 
     with pytest.raises(SystemExit, match="--pages must be greater than 0"):
@@ -280,6 +364,11 @@ def test_run_scrape_builds_manifest_and_delegates_to_runner(monkeypatch, tmp_pat
         blacklist_file=None,
         reject_keyword=["battery"],
         browser_hardening="minimal",
+        proxy="http://127.0.0.1:8080",
+        proxy_file="proxies.txt",
+        max_blocks_per_proxy=2,
+        user_agent="ua-fixed",
+        accept_language="en-US,en;q=0.9",
     )
 
     class FakeDateTime:
@@ -316,6 +405,11 @@ def test_run_scrape_builds_manifest_and_delegates_to_runner(monkeypatch, tmp_pat
     assert seen["manifest"].created_at == "2026-05-11T08:00:00+00:00"
     assert seen["manifest"].browser_hardening == "minimal"
     assert seen["manifest"].reject_keyword == ["battery"]
+    assert seen["manifest"].proxy == "http://127.0.0.1:8080"
+    assert seen["manifest"].proxy_file == "proxies.txt"
+    assert seen["manifest"].max_blocks_per_proxy == 2
+    assert seen["manifest"].user_agent == "ua-fixed"
+    assert seen["manifest"].accept_language == "en-US,en;q=0.9"
     assert seen["groups"] == [FilterGroup(name="cli_extra", post_reject_terms=("battery",))]
     assert seen["run_dir"] == build_output_dir(
         Path(tmp_path),
@@ -345,6 +439,11 @@ def test_run_scrape_passes_browser_hardening_and_category_source_into_runner_man
         blacklist_file=None,
         reject_keyword=[],
         browser_hardening="minimal",
+        proxy="",
+        proxy_file="",
+        max_blocks_per_proxy=2,
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
     )
 
     class FakeDateTime:
@@ -398,6 +497,11 @@ def test_run_scrape_run_dir_manifest_can_be_consumed_by_run_resume(monkeypatch, 
         blacklist_file=None,
         reject_keyword=[],
         browser_hardening="minimal",
+        proxy="",
+        proxy_file="",
+        max_blocks_per_proxy=2,
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
     )
 
     class FakeDateTime:
@@ -429,11 +533,23 @@ def test_run_scrape_run_dir_manifest_can_be_consumed_by_run_resume(monkeypatch, 
             (run_dir / name).write_text("", encoding="utf-8")
         return cli.scrape_runner.RunResult(exit_code=3, accepted_count=0, blocked=True)
 
-    def fake_resume_scrape(run_dir: Path, *, details_only: bool):
+    def fake_resume_scrape(
+        run_dir: Path,
+        *,
+        details_only: bool,
+        proxy_override: str,
+        proxy_file_override: str,
+        user_agent_override: str,
+        accept_language_override: str,
+    ):
         store = RunStateStore(run_dir)
         seen["resume_manifest"] = store.load_manifest()
         seen["resume_state"] = store.load_state()
         seen["resume_details_only"] = details_only
+        seen["resume_proxy_override"] = proxy_override
+        seen["resume_proxy_file_override"] = proxy_file_override
+        seen["resume_user_agent_override"] = user_agent_override
+        seen["resume_accept_language_override"] = accept_language_override
         return cli.scrape_runner.RunResult(exit_code=0, accepted_count=1, blocked=False)
 
     monkeypatch.setattr(cli, "datetime", FakeDateTime)
@@ -444,7 +560,16 @@ def test_run_scrape_run_dir_manifest_can_be_consumed_by_run_resume(monkeypatch, 
     scrape_code = cli.run_scrape(args)
     scrape_output = capsys.readouterr().out
 
-    resume_code = cli.run_resume(argparse.Namespace(run_dir=str(seen["run_dir"]), details_only=True))
+    resume_code = cli.run_resume(
+        argparse.Namespace(
+            run_dir=str(seen["run_dir"]),
+            details_only=True,
+            proxy="http://proxy-b:8080",
+            proxy_file="proxies-2.txt",
+            user_agent="ua-override",
+            accept_language="fr-FR,fr;q=0.9",
+        )
+    )
     resume_output = capsys.readouterr().out
 
     assert scrape_code == 3
@@ -460,6 +585,10 @@ def test_run_scrape_run_dir_manifest_can_be_consumed_by_run_resume(monkeypatch, 
         }
     ]
     assert seen["resume_details_only"] is True
+    assert seen["resume_proxy_override"] == "http://proxy-b:8080"
+    assert seen["resume_proxy_file_override"] == "proxies-2.txt"
+    assert seen["resume_user_agent_override"] == "ua-override"
+    assert seen["resume_accept_language_override"] == "fr-FR,fr;q=0.9"
     assert resume_code == 0
     assert f"Resumed run: {seen['run_dir']}" in resume_output
     assert "Accepted products: 1" in resume_output
@@ -486,6 +615,11 @@ def test_run_scrape_with_blacklist_reports_full_processed_counts_when_final_page
         blacklist_file="rules/product_blacklist.json",
         reject_keyword=[],
         browser_hardening="minimal",
+        proxy="",
+        proxy_file="",
+        max_blocks_per_proxy=2,
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
     )
 
     class FakeDateTime:
@@ -535,6 +669,11 @@ def test_run_scrape_returns_runner_exit_code_when_no_products_are_accepted(monke
         blacklist_file="rules/product_blacklist.json",
         reject_keyword=[],
         browser_hardening="minimal",
+        proxy="",
+        proxy_file="",
+        max_blocks_per_proxy=2,
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
     )
 
     class FakeDateTime:

@@ -153,8 +153,8 @@ def test_collect_raw_products_passes_browser_hardening_to_open_listing_page(monk
     monkeypatch.setattr(
         browser,
         "open_listing_page",
-        lambda url, user_data_dir=None, port=None, browser_hardening="minimal": (
-            seen.setdefault("browser_hardening", browser_hardening) or FakePage()
+        lambda url, **kwargs: (
+            seen.setdefault("browser_hardening", kwargs.get("browser_hardening", "minimal")) or FakePage()
         ),
     )
     monkeypatch.setattr(
@@ -197,7 +197,17 @@ def test_open_listing_page_applies_minimal_stealth_and_pause(monkeypatch):
     )
 
     assert isinstance(page, FakePage)
-    assert ("build_options", {"user_data_dir": ".browser-profile", "port": 9333, "browser_hardening": "minimal"}) in calls
+    assert (
+        "build_options",
+        {
+            "user_data_dir": ".browser-profile",
+            "port": 9333,
+            "browser_hardening": "minimal",
+            "proxy": "",
+            "user_agent": "",
+            "accept_language": "",
+        },
+    ) in calls
     assert any(name == "stealth" for name, _ in calls)
     assert any(name == "pause" for name, _ in calls)
 
@@ -221,6 +231,43 @@ def test_open_listing_page_skips_stealth_when_hardening_off(monkeypatch):
 
     assert not any(name == "stealth" for name, _ in calls)
     assert any(name == "pause" for name, _ in calls)
+
+
+def test_build_options_applies_proxy_user_agent_and_language(monkeypatch):
+    calls: list[tuple[str, object]] = []
+
+    class FakeOptions:
+        def set_local_port(self, value):
+            calls.append(("set_local_port", value))
+
+        def set_user_data_path(self, value):
+            calls.append(("set_user_data_path", value))
+
+        def set_proxy(self, value):
+            calls.append(("set_proxy", value))
+
+        def set_user_agent(self, value):
+            calls.append(("set_user_agent", value))
+
+        def set_argument(self, arg, value=None):
+            calls.append(("set_argument", (arg, value)))
+
+    monkeypatch.setattr(browser, "ChromiumOptions", FakeOptions)
+
+    browser._build_options(
+        user_data_dir=".browser-profile",
+        port=9333,
+        browser_hardening="minimal",
+        proxy="http://127.0.0.1:8080",
+        user_agent="ua-fixed",
+        accept_language="en-US,en;q=0.9",
+    )
+
+    assert ("set_local_port", 9333) in calls
+    assert any(name == "set_user_data_path" and str(value).endswith(".browser-profile") for name, value in calls)
+    assert ("set_proxy", "http://127.0.0.1:8080") in calls
+    assert ("set_user_agent", "ua-fixed") in calls
+    assert ("set_argument", ("--lang", "en-US")) in calls
 
 
 def test_prepare_listing_product_resolves_bundle_deals_entry_product():

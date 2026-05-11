@@ -217,12 +217,18 @@ def open_listing_page(
     user_data_dir: str | None = None,
     port: int | None = None,
     browser_hardening: str = "minimal",
+    proxy: str = "",
+    user_agent: str = "",
+    accept_language: str = "",
 ) -> ChromiumPage:
     page = ChromiumPage(
         _build_options(
             user_data_dir=user_data_dir,
             port=port,
             browser_hardening=browser_hardening,
+            proxy=proxy,
+            user_agent=user_agent,
+            accept_language=accept_language,
         )
     )
     page.get(url)
@@ -1107,10 +1113,19 @@ def _build_options(
     user_data_dir: str | None,
     port: int | None,
     browser_hardening: str = "minimal",
+    proxy: str = "",
+    user_agent: str = "",
+    accept_language: str = "",
 ) -> ChromiumOptions:
     options = ChromiumOptions()
     if port is not None:
         options.set_local_port(port)
     if user_data_dir:
         options.set_user_data_path(str(Path(user_data_dir).resolve()))
+    if proxy:
+        options.set_proxy(proxy)
+    if user_agent:
+        options.set_user_agent(user_agent)
+    if accept_language:
+        options.set_argument("--lang", accept_language.split(",", 1)[0])
     return options
