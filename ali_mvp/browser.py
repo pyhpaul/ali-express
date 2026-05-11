@@ -572,95 +572,99 @@ return (() => {
 
 
 def _enrich_product_details(page: ChromiumPage, products: list[dict[str, object]]) -> None:
-    listing_url = page.url
-    current_listing_page: int | None = None
-    listing_context_ready = False
+    listing_url = str(getattr(page, "url", "") or "")
     for index, product in enumerate(products):
-        _prepare_listing_product(product)
-        detail_url = str(product.get("resolvedProductUrl") or product.get("url") or "")
-        if not detail_url:
-            continue
-        entry_type = str(product.get("entryType") or "")
-        try:
-            target_listing_page = _listing_page_number(product)
-            has_listing_context = _has_listing_context(product)
-            if has_listing_context and (not listing_context_ready or current_listing_page != target_listing_page):
-                if not _restore_listing_context(page, product, str(listing_url or "")):
+        status = enrich_single_product_detail(page, product)
+        if status == "captcha_blocked":
+            _mark_detail_status(products[index + 1 :], "detail_skipped_after_captcha")
+            break
+    if listing_url and str(getattr(page, "url", "") or "") != listing_url:
+        page.get(listing_url)
+
+
+def enrich_single_product_detail(page: ChromiumPage, product: dict[str, object]) -> str:
+    listing_url = str(getattr(page, "url", "") or "")
+    _prepare_listing_product(product)
+    detail_url = str(product.get("resolvedProductUrl") or product.get("url") or "")
+    if not detail_url:
+        product["detailStatus"] = "detail_missing_url"
+        return "detail_missing_url"
+
+    entry_type = str(product.get("entryType") or "")
+    has_listing_context = _has_listing_context(product)
+    detail_opened = False
+    try:
+        if has_listing_context and not _restore_listing_context(page, product, listing_url):
+            product["detailStatus"] = "listing_context_failed"
+            return "listing_context_failed"
+        if entry_type == "promo_card":
+            promo_url = str(product.get("promoLandingUrl") or product.get("cardUrl") or "")
+            if promo_url:
+                page.get(promo_url)
+                time.sleep(2)
+                promo = page.run_js(PROMO_FIELDS_SCRIPT)
+                if isinstance(promo, dict):
+                    product.update(promo)
+                if has_listing_context and not _restore_listing_context(page, product, listing_url):
                     product["detailStatus"] = "listing_context_failed"
-                    listing_context_ready = False
-                    continue
-                current_listing_page = target_listing_page
-                listing_context_ready = True
-            if entry_type == "promo_card":
-                promo_url = str(product.get("promoLandingUrl") or product.get("cardUrl") or "")
-                if promo_url:
-                    page.get(promo_url)
-                    time.sleep(2)
-                    promo = page.run_js(PROMO_FIELDS_SCRIPT)
-                    if isinstance(promo, dict):
-                        product.update(promo)
-                    listing_context_ready = False
-                    if has_listing_context:
-                        if not _restore_listing_context(page, product, str(listing_url or "")):
-                            product["detailStatus"] = "listing_context_failed"
-                            continue
-                        current_listing_page = target_listing_page
-                        listing_context_ready = True
-            opened = _open_detail_from_listing_context(page, product)
-            if not opened:
-                product["detailStatus"] = "detail_open_failed"
-                if has_listing_context:
-                    _restore_listing_context(page, product, str(listing_url or ""))
-                elif listing_url:
-                    page.get(str(listing_url))
-                    _wait_for_page_ready(page)
-                listing_context_ready = False
-                continue
-            detail_page = _resolve_detail_page_context(page, product)
-            if _is_captcha_page(str(detail_page.url), str(getattr(detail_page, "title", ""))):
-                if not _wait_for_captcha_resolution(detail_page):
-                    product["detailStatus"] = "captcha_blocked"
-                    _mark_detail_status(products[index + 1 :], "detail_skipped_after_captcha")
-                    break
-            detail = detail_page.run_js(DETAIL_FIELDS_SCRIPT)
-        except Exception:
-            detail = {}
+                    return "listing_context_failed"
+        opened = _open_detail_from_listing_context(page, product)
+        if not opened:
+            product["detailStatus"] = "detail_open_failed"
             if has_listing_context:
-                try:
-                    _restore_listing_context(page, product, str(listing_url or ""))
-                except Exception:
-                    pass
+                _restore_listing_context(page, product, listing_url)
             elif listing_url:
-                try:
-                    page.get(str(listing_url))
-                    _wait_for_page_ready(page)
-                except Exception:
-                    pass
-            listing_context_ready = False
-        if isinstance(detail, dict):
-            detail = _normalize_detail_fields(detail)
-            product.update(detail)
-        if detail_url:
-            product["url"] = detail_url
-        try:
-            if product.get("_detailUsedNewTab"):
-                detail_tab_id = str(product.get("_detailTabId") or "")
-                if detail_tab_id:
-                    page.close_tabs(detail_tab_id)
-                page.activate_tab(str(product.get("_listingTabId") or page.tab_id))
-                _wait_for_page_ready(page)
-            else:
-                page.back()
-                _wait_for_page_ready(page)
-        except Exception:
-            if listing_url:
                 page.get(listing_url)
                 _wait_for_page_ready(page)
-            listing_context_ready = False
-            continue
-        listing_context_ready = entry_type != "promo_card"
+            return "detail_open_failed"
+        detail_opened = True
+        detail_page = _resolve_detail_page_context(page, product)
+        if _is_captcha_page(str(detail_page.url), str(getattr(detail_page, "title", ""))):
+            if not _wait_for_captcha_resolution(detail_page):
+                product["detailStatus"] = "captcha_blocked"
+                return "captcha_blocked"
+        raw_detail = detail_page.run_js(DETAIL_FIELDS_SCRIPT)
+        if isinstance(raw_detail, dict):
+            detail = _normalize_detail_fields(raw_detail)
+            product.update(detail)
+        product["url"] = detail_url
+        product["detailStatus"] = "detail_enriched"
+        return "detail_enriched"
+    except Exception:
+        product["detailStatus"] = str(product.get("detailStatus") or "detail_open_failed")
+        return str(product["detailStatus"])
+    finally:
+        if detail_opened:
+            _restore_listing_page_after_detail(page, product, listing_url)
+
+
+def _restore_listing_page_after_detail(page: ChromiumPage, product: dict[str, object], listing_url: str) -> None:
+    try:
+        if product.get("_detailUsedNewTab"):
+            detail_tab_id = str(product.get("_detailTabId") or "")
+            if detail_tab_id:
+                page.close_tabs(detail_tab_id)
+            page.activate_tab(str(product.get("_listingTabId") or page.tab_id))
+            _wait_for_page_ready(page)
+            return
+        page.back()
+        _wait_for_page_ready(page)
+        return
+    except Exception:
+        pass
+
+    if _has_listing_context(product):
+        try:
+            if _restore_listing_context(page, product, listing_url):
+                return
+        except Exception:
+            pass
     if listing_url:
-        page.get(listing_url)
+        try:
+            page.get(listing_url)
+            _wait_for_page_ready(page)
+        except Exception:
+            pass
 
 
 def _wait_for_captcha_resolution(

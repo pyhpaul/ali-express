@@ -331,6 +331,150 @@ def test_finalize_products_enriches_every_final_product_when_enabled(monkeypatch
     assert products[0]["shopName"] == "Example Store"
 
 
+def test_enrich_single_product_detail_marks_captcha_blocked(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.url = "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"
+            self.title = "listing"
+            self.calls: list[str] = []
+
+        def get(self, url):
+            self.calls.append(url)
+            self.url = url
+
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        browser,
+        "_open_detail_from_listing_context",
+        lambda page, product: setattr(page, "url", "https://www.aliexpress.com//item/1.html/_____tmd_____/punish?x5step=1")
+        or setattr(page, "title", "验证码拦截")
+        or True,
+    )
+    monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
+    monkeypatch.setattr(browser, "_wait_for_captcha_resolution", lambda page, timeout_seconds=60.0, interval_seconds=1.0: False)
+
+    product = {"url": "https://www.aliexpress.com/item/1.html", "title": "blocked first"}
+
+    status = browser.enrich_single_product_detail(FakePage(), product)
+
+    assert status == "captcha_blocked"
+    assert product["detailStatus"] == "captcha_blocked"
+    assert product.get("attributesText", "") == ""
+    assert product.get("descriptionText", "") == ""
+
+
+def test_enrich_single_product_detail_marks_missing_url_status():
+    class FakePage:
+        def __init__(self):
+            self.url = "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"
+            self.title = "listing"
+
+    product = {"title": "missing url"}
+
+    status = browser.enrich_single_product_detail(FakePage(), product)
+
+    assert status == "detail_missing_url"
+    assert product["detailStatus"] == "detail_missing_url"
+
+
+def test_enrich_single_product_detail_writes_detail_fields_on_success(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.url = "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"
+            self.title = "listing"
+
+        def get(self, url):
+            self.url = url
+
+        def back(self):
+            self.url = "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"
+            self.title = "listing"
+
+        def run_js(self, script):
+            if script == browser.DETAIL_FIELDS_SCRIPT:
+                return {
+                    "shopName": "Example Store",
+                    "shopNameCandidates": ["Example Store"],
+                    "attributesText": '{"Type":"Accessory"}',
+                    "attributePairs": [],
+                    "descriptionText": "detail text",
+                    "descriptionFrameText": "",
+                    "jsonLdDescription": "",
+                    "metaDescription": "",
+                    "breadcrumb": "",
+                    "breadcrumbCandidates": [],
+                    "detailReviewText": "",
+                    "reviewerText": "",
+                }
+            return {}
+
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        browser,
+        "_open_detail_from_listing_context",
+        lambda page, product: setattr(page, "url", product["url"]) or setattr(page, "title", "detail") or True,
+    )
+    monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
+
+    product = {"url": "https://www.aliexpress.com/item/1.html", "title": "normal item"}
+
+    status = browser.enrich_single_product_detail(FakePage(), product)
+
+    assert status == "detail_enriched"
+    assert product["detailStatus"] == "detail_enriched"
+    assert product["shopName"] == "Example Store"
+    assert product["attributesText"] == '{"Type":"Accessory"}'
+    assert product["descriptionText"] == "detail text"
+
+
+def test_enrich_single_product_detail_keeps_listing_page_when_listing_context_restore_fails(monkeypatch):
+    listing_url = "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"
+
+    class FakePage:
+        def __init__(self):
+            self.url = listing_url
+            self.title = "listing"
+            self.back_calls = 0
+
+        def back(self):
+            self.back_calls += 1
+            self.url = "https://www.aliexpress.com/unexpected-history-target.html"
+            self.title = "wrong"
+
+    monkeypatch.setattr(browser, "_restore_listing_context", lambda page, product, default_listing_url: False)
+
+    product = {
+        "url": "https://www.aliexpress.com/item/1.html",
+        "_listingBaseUrl": listing_url,
+        "_listingPageUrl": listing_url,
+        "_listingPageNumber": 2,
+    }
+
+    page = FakePage()
+    status = browser.enrich_single_product_detail(page, product)
+
+    assert status == "listing_context_failed"
+    assert product["detailStatus"] == "listing_context_failed"
+    assert page.url == listing_url
+    assert page.back_calls == 0
+
+
+def test_enrich_single_product_detail_sets_status_on_exception(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.url = "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"
+            self.title = "listing"
+
+    monkeypatch.setattr(browser, "_open_detail_from_listing_context", lambda page, product: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    product = {"url": "https://www.aliexpress.com/item/1.html", "title": "raises on open"}
+
+    status = browser.enrich_single_product_detail(FakePage(), product)
+
+    assert status == "detail_open_failed"
+    assert product["detailStatus"] == "detail_open_failed"
+
+
 def test_enrich_product_details_continues_after_single_product_failure(monkeypatch):
     class FakePage:
         def __init__(self):
@@ -462,19 +606,7 @@ def test_enrich_product_details_stops_after_captcha_and_marks_status(monkeypatch
 
         def get(self, url):
             self.calls.append(url)
-            if url.endswith("/1.html"):
-                self.url = "https://www.aliexpress.com//item/1.html/_____tmd_____/punish?x5step=1"
-                self.title = "验证码拦截"
-            else:
-                self.url = url
-                self.title = "normal item"
-
-            def run_js(self, script):
-                return {
-                    "shopName": "Should not be used after captcha",
-                    "attributesText": '{"Type":"Mixer Parts"}',
-                    "descriptionText": "Should not leak into blocked item",
-                }
+            self.url = url
 
     monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(
@@ -493,7 +625,7 @@ def test_enrich_product_details_stops_after_captcha_and_marks_status(monkeypatch
     ]
 
     page = FakePage()
-    browser._enrich_product_details(page, products)
+    browser.enrich_listing_products(page, products)
 
     assert page.calls == ["https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"]
     assert products[0]["detailStatus"] == "captcha_blocked"
@@ -557,9 +689,9 @@ def test_enrich_product_details_resumes_when_captcha_is_cleared(monkeypatch):
     browser._enrich_product_details(FakePage(), products)
 
     assert products[0]["shopName"] == "Example Store"
-    assert products[0].get("detailStatus", "") == ""
+    assert products[0]["detailStatus"] == "detail_enriched"
     assert products[1]["shopName"] == "Example Store"
-    assert products[1].get("detailStatus", "") == ""
+    assert products[1]["detailStatus"] == "detail_enriched"
 
 
 def test_enrich_product_details_resolves_promo_entry_and_keeps_promotion_text(monkeypatch):
@@ -710,8 +842,8 @@ def test_enrich_product_details_restores_listing_context_for_products_from_multi
     assert advance_calls == [2]
     assert products[0]["shopName"] == "Store p1"
     assert products[1]["shopName"] == "Store p2"
-    assert products[0].get("detailStatus", "") == ""
-    assert products[1].get("detailStatus", "") == ""
+    assert products[0]["detailStatus"] == "detail_enriched"
+    assert products[1]["detailStatus"] == "detail_enriched"
 
 
 def test_enrich_product_details_restores_listing_context_after_promo_capture(monkeypatch):
@@ -798,8 +930,8 @@ def test_enrich_product_details_restores_listing_context_after_promo_capture(mon
     assert products[0]["promoChannel"] == "Dollar Express"
     assert products[0]["shopName"] == "Example Store"
     assert products[1]["shopName"] == "Example Store"
-    assert products[0].get("detailStatus", "") == ""
-    assert products[1].get("detailStatus", "") == ""
+    assert products[0]["detailStatus"] == "detail_enriched"
+    assert products[1]["detailStatus"] == "detail_enriched"
 
 
 def test_open_detail_from_listing_context_clicks_card_and_waits_for_navigation(monkeypatch):
