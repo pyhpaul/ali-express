@@ -28,6 +28,14 @@ Browser hardening:
 - `--browser-hardening off|minimal`
 - default: `minimal`
 
+Proxy and browser identity:
+
+- `--proxy http://127.0.0.1:8080`
+- `--proxy-file proxies.txt`
+- `--max-blocks-per-proxy 2`
+- `--user-agent "ua-fixed"`
+- `--accept-language "en-US,en;q=0.9"`
+
 Pagination semantics:
 
 - `--max-items` is the total number of products requested for the run.
@@ -46,6 +54,24 @@ Optional product blacklist filtering:
 ```bash
 python -m ali_mvp scrape --keyword "Home appliance accessories" --blacklist-file rules/product_blacklist.json
 python -m ali_mvp scrape --keyword "Home appliance accessories" --blacklist-file rules/product_blacklist.json --reject-keyword sensor --reject-keyword relay
+```
+
+Resume a blocked run:
+
+```bash
+python -m ali_mvp resume --run-dir data/home-appliance-accessories/20260511_120000
+```
+
+Retry only unfinished details:
+
+```bash
+python -m ali_mvp resume --run-dir data/home-appliance-accessories/20260511_120000 --details-only
+```
+
+Resume with temporary proxy or browser identity override:
+
+```bash
+python -m ali_mvp resume --run-dir data/home-appliance-accessories/20260511_120000 --proxy http://127.0.0.1:8080 --user-agent "ua-fixed" --accept-language "en-US,en;q=0.9"
 ```
 
 Detail enrichment adds these columns to `products.csv`:
@@ -70,6 +96,9 @@ Outputs:
 - `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/products_filter_audit.csv`
 - `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/products_review.csv`
 - `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/category_rank.csv`
+- `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/run_manifest.json`
+- `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/run_state.json`
+- `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/run_summary.json`
 
 For example, `--keyword "women dress"` writes to:
 
@@ -334,18 +363,20 @@ Code locations:
 
 ## Limitations
 
-This MVP is for low-frequency validation. It does not handle proxy pools, CAPTCHA solving, account pools, checkout, or official AliExpress API access.
+This MVP is for low-frequency validation. It now supports a minimal sequential proxy pool and fixed browser identity per run, but it still does not handle automated CAPTCHA solving, account pools, checkout, or official AliExpress API access.
 
 Current anti-risk status:
 
 - Done in this phase:
   - optional browser pacing / stealth hardening via `--browser-hardening off|minimal`
+  - single-proxy or proxy-file based sequential rotation via `--proxy`, `--proxy-file`, and `--max-blocks-per-proxy`
+  - fixed browser identity per run via `--user-agent` and `--accept-language`
   - captcha page detection
   - manual captcha wait-and-resume flow
   - graceful detail-status fallback when captcha is not cleared
 - Not done in this phase:
   - automatic slider / captcha solving
-  - proxy rotation or IP pool management
+  - proxy health scoring or adaptive pool management
   - advanced fingerprint / header rotation strategy
   - fully automated recovery under sustained risk-control pressure
 
@@ -354,7 +385,13 @@ Current anti-risk status:
 After logging in, run:
 
 ```bash
-python -m ali_mvp scrape --keyword "women dress" --max-items 20
+python -m ali_mvp scrape --keyword "Home appliance accessories" --max-items 20 --enrich-detail --blacklist-file rules/product_blacklist.json --user-data-dir .browser-profile
+```
+
+If the run is blocked, clear the CAPTCHA manually in the same profile and then resume:
+
+```bash
+python -m ali_mvp resume --run-dir data/home-appliance-accessories/<timestamp>
 ```
 
 If no products are extracted, open the browser window and check for region selection, CAPTCHA, cookie banners, or page layout changes.
