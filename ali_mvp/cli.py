@@ -77,6 +77,17 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Existing scrape run directory containing products.csv outputs.",
     )
+    postprocess.add_argument(
+        "--translator",
+        choices=("identity", "mymemory"),
+        default="identity",
+        help="Translation backend for zh outputs.",
+    )
+    postprocess.add_argument(
+        "--translator-email",
+        default="",
+        help="Optional email sent to MyMemory as the de parameter.",
+    )
     postprocess.set_defaults(func=run_postprocess)
     return parser
 
@@ -89,11 +100,17 @@ def main(argv: list[str] | None = None) -> int:
 
 def run_postprocess(args: argparse.Namespace) -> int:
     from .postprocess import run_postprocess_for_dir
+    from .translation import build_translation_cache_namespace, build_translator
 
-    run_postprocess_for_dir(Path(args.run_dir), translator=lambda text: text)
+    run_postprocess_for_dir(
+        Path(args.run_dir),
+        translator=build_translator(args.translator, email=args.translator_email),
+        translation_cache_namespace=build_translation_cache_namespace(args.translator),
+    )
     print(f"Wrote: {Path(args.run_dir) / 'products_review.csv'}")
     print(f"Wrote: {Path(args.run_dir) / 'products_zh.csv'}")
     print(f"Wrote: {Path(args.run_dir) / 'products_filter_audit_zh.csv'}")
+    print(f"Wrote: {Path(args.run_dir) / 'review_only.csv'}")
     print(f"Wrote: {Path(args.run_dir) / 'products_report.html'}")
     return 0
 
@@ -110,8 +127,14 @@ def _collect_products_with_blacklist(
     port: int,
     enrich_detail: bool,
     pages: int | None,
+    browser_hardening: str = "minimal",
 ) -> tuple[list[object], list[dict[str, str]], int, int]:
-    page = open_listing_page(url, user_data_dir=user_data_dir, port=port)
+    page = open_listing_page(
+        url,
+        user_data_dir=user_data_dir,
+        port=port,
+        browser_hardening=browser_hardening,
+    )
     accepted_products = []
     audit_rows: list[dict[str, str]] = []
     seen_keys: set[str] = set()
@@ -174,6 +197,7 @@ def _collect_products_with_blacklist(
 
 def run_scrape(args: argparse.Namespace) -> int:
     source_type, source_value, url = _resolve_source(args)
+    browser_hardening = getattr(args, "browser_hardening", "minimal")
     if args.max_items < 1:
         raise SystemExit("--max-items must be greater than 0")
     if args.pages is not None and args.pages < 1:
@@ -195,6 +219,7 @@ def run_scrape(args: argparse.Namespace) -> int:
             port=args.port,
             enrich_detail=args.enrich_detail,
             pages=args.pages,
+            browser_hardening=browser_hardening,
         )
     else:
         raw_products = collect_raw_products(
@@ -204,6 +229,7 @@ def run_scrape(args: argparse.Namespace) -> int:
             port=args.port,
             enrich_detail=args.enrich_detail,
             pages=args.pages,
+            browser_hardening=browser_hardening,
         )
         products = normalize_products(
             raw_products,

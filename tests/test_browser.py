@@ -111,7 +111,9 @@ def test_collect_raw_products_uses_public_browser_helpers(monkeypatch):
     monkeypatch.setattr(
         browser,
         "open_listing_page",
-        lambda url, user_data_dir=None, port=None: calls.__setitem__("open", calls["open"] + 1) or FakePage(),
+        lambda url, user_data_dir=None, port=None, browser_hardening="minimal": (
+            calls.__setitem__("open", calls["open"] + 1) or FakePage()
+        ),
     )
     monkeypatch.setattr(
         browser,
@@ -140,6 +142,85 @@ def test_collect_raw_products_uses_public_browser_helpers(monkeypatch):
 
     assert products == [{"url": "https://www.aliexpress.com/item/1001.html"}]
     assert calls == {"open": 1, "collect": 1, "advance": 0, "enrich": 1}
+
+
+def test_collect_raw_products_passes_browser_hardening_to_open_listing_page(monkeypatch):
+    seen: dict[str, object] = {}
+
+    class FakePage:
+        url = "https://www.aliexpress.com/wholesale?SearchText=women+dress"
+
+    monkeypatch.setattr(
+        browser,
+        "open_listing_page",
+        lambda url, user_data_dir=None, port=None, browser_hardening="minimal": (
+            seen.setdefault("browser_hardening", browser_hardening) or FakePage()
+        ),
+    )
+    monkeypatch.setattr(
+        browser,
+        "collect_listing_page_products",
+        lambda page, scroll_rounds=8: [{"url": "https://www.aliexpress.com/item/1001.html"}],
+    )
+    monkeypatch.setattr(browser, "dedupe_listing_products", lambda products, seen_keys: products)
+
+    products = browser.collect_raw_products(
+        "https://www.aliexpress.com/wholesale?SearchText=women+dress",
+        max_items=1,
+        browser_hardening="off",
+    )
+
+    assert products == [{"url": "https://www.aliexpress.com/item/1001.html"}]
+    assert seen["browser_hardening"] == "off"
+
+
+def test_open_listing_page_applies_minimal_stealth_and_pause(monkeypatch):
+    calls: list[tuple[str, object]] = []
+
+    class FakePage:
+        def __init__(self, options):
+            calls.append(("page_init", options))
+
+        def get(self, url):
+            calls.append(("get", url))
+
+    monkeypatch.setattr(browser, "ChromiumPage", FakePage)
+    monkeypatch.setattr(browser, "_build_options", lambda **kwargs: calls.append(("build_options", kwargs)) or object())
+    monkeypatch.setattr(browser, "_init_page_stealth", lambda page: calls.append(("stealth", page)))
+    monkeypatch.setattr(browser, "_pause_after_navigation", lambda: calls.append(("pause", None)))
+
+    page = browser.open_listing_page(
+        "https://example.test/listing",
+        user_data_dir=".browser-profile",
+        port=9333,
+        browser_hardening="minimal",
+    )
+
+    assert isinstance(page, FakePage)
+    assert ("build_options", {"user_data_dir": ".browser-profile", "port": 9333, "browser_hardening": "minimal"}) in calls
+    assert any(name == "stealth" for name, _ in calls)
+    assert any(name == "pause" for name, _ in calls)
+
+
+def test_open_listing_page_skips_stealth_when_hardening_off(monkeypatch):
+    calls: list[tuple[str, object]] = []
+
+    class FakePage:
+        def __init__(self, options):
+            calls.append(("page_init", options))
+
+        def get(self, url):
+            calls.append(("get", url))
+
+    monkeypatch.setattr(browser, "ChromiumPage", FakePage)
+    monkeypatch.setattr(browser, "_build_options", lambda **kwargs: object())
+    monkeypatch.setattr(browser, "_init_page_stealth", lambda page: calls.append(("stealth", page)))
+    monkeypatch.setattr(browser, "_pause_after_navigation", lambda: calls.append(("pause", None)))
+
+    browser.open_listing_page("https://example.test/listing", browser_hardening="off")
+
+    assert not any(name == "stealth" for name, _ in calls)
+    assert any(name == "pause" for name, _ in calls)
 
 
 def test_prepare_listing_product_resolves_bundle_deals_entry_product():

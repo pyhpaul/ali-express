@@ -86,12 +86,35 @@ REVIEW_FIELDS = [
     "warning_fields",
 ]
 
+REVIEW_ONLY_FIELDS = [
+    "source_type",
+    "source_value",
+    "title",
+    "title_zh",
+    "product_url",
+    "image_url",
+    "price",
+    "entry_type",
+    "shop_name",
+    "shop_name_zh",
+    "promotion_text",
+    "promotion_text_zh",
+    "attributes_summary",
+    "attributes_summary_zh",
+    "decision_label",
+    "stage_label",
+    "review_note",
+]
+
 PRODUCT_ZH_FIELDS = PRODUCT_FIELDS + [
     "title_zh",
     "shop_name_zh",
     "promotion_text_zh",
     "attributes_summary",
     "attributes_summary_zh",
+    "decision_label",
+    "stage_label",
+    "review_note",
 ]
 
 FILTER_AUDIT_ZH_FIELDS = FILTER_AUDIT_FIELDS + [
@@ -102,6 +125,9 @@ FILTER_AUDIT_ZH_FIELDS = FILTER_AUDIT_FIELDS + [
     "warning_groups_zh",
     "warning_terms_zh",
     "reason_zh",
+    "decision_label",
+    "stage_label",
+    "review_note",
 ]
 
 

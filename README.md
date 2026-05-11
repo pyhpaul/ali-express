@@ -23,6 +23,11 @@ python -m ali_mvp scrape --url "https://www.aliexpress.com/..." --max-items 80
 python -m ali_mvp scrape --category-url "https://www.aliexpress.com/category/100003109/women-clothing.html" --max-items 80
 ```
 
+Browser hardening:
+
+- `--browser-hardening off|minimal`
+- default: `minimal`
+
 Pagination semantics:
 
 - `--max-items` is the total number of products requested for the run.
@@ -63,6 +68,7 @@ Outputs:
 
 - `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/products.csv`
 - `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/products_filter_audit.csv`
+- `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/products_review.csv`
 - `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/category_rank.csv`
 
 For example, `--keyword "women dress"` writes to:
@@ -70,6 +76,7 @@ For example, `--keyword "women dress"` writes to:
 ```text
 data/women-dress/20260508_224530/products.csv
 data/women-dress/20260508_224530/products_filter_audit.csv
+data/women-dress/20260508_224530/products_review.csv
 data/women-dress/20260508_224530/category_rank.csv
 ```
 
@@ -80,8 +87,54 @@ Category URL runs are grouped by the category slug when the URL exposes one:
 ```text
 data/category-women-clothing/20260508_224530/products.csv
 data/category-women-clothing/20260508_224530/products_filter_audit.csv
+data/category-women-clothing/20260508_224530/products_review.csv
 data/category-women-clothing/20260508_224530/category_rank.csv
 ```
+
+Postprocess outputs:
+
+```bash
+python -m ali_mvp postprocess --run-dir data/home-appliance-accessories/20260511_120000
+```
+
+Use MyMemory for free zh translation:
+
+```bash
+python -m ali_mvp postprocess --run-dir data/home-appliance-accessories/20260511_120000 --translator mymemory
+```
+
+Optional higher-quota hint for MyMemory:
+
+```bash
+python -m ali_mvp postprocess --run-dir data/home-appliance-accessories/20260511_120000 --translator mymemory --translator-email you@example.com
+```
+
+Additional outputs:
+
+- `products_zh.csv`
+- `products_filter_audit_zh.csv`
+- `review_only.csv`
+- `products_report.html`
+- `translation_cache.json`
+
+Recommended review workflow for non-technical staff:
+
+1. Open `products_report.html`
+   - Use the built-in filters to switch between:
+     - `只看拒绝入库`
+     - `只看建议入库`
+     - specific reject reasons such as `遥控控制类` or `点火控制类`
+2. Use `review_only.csv` for spreadsheet review
+   - This is the compact handoff file for staff
+   - Key columns:
+     - `title` / `title_zh`
+     - `decision_label`
+     - `stage_label`
+     - `review_note`
+3. Use `products_zh.csv` only when more product context is needed
+   - It keeps the fuller translated dataset for deeper review
+4. Use `products_filter_audit_zh.csv` when blacklist hit details must be audited
+   - It retains the rule-hit columns and zh labels
 
 Blacklist filtering semantics:
 
@@ -207,9 +260,94 @@ Code locations:
 - CSV writer: `ali_mvp/output.py` -> `write_filter_audit_csv()`
 - Output path and write call: `ali_mvp/cli.py` -> `run_scrape()`
 
+### `products_review.csv`
+
+Purpose: review-oriented table for accepted and rejected rows with enough product context to audit blacklist decisions quickly.
+
+Columns:
+
+- `source_type`
+- `source_value`
+- `title`
+- `product_url`
+- `image_url`
+- `price`
+- `search_card_url`
+- `entry_type`
+- `is_promoted`
+- `promo_channel`
+- `promotion_text`
+- `shop_name`
+- `shipping_text`
+- `attributes_text`
+- `description_text`
+- `detail_status`
+- `filter_decision`
+- `filter_stage`
+- `reject_groups`
+- `reject_terms`
+- `reject_fields`
+- `warning_groups`
+- `warning_terms`
+- `warning_fields`
+
+Code locations:
+
+- Review row join: `ali_mvp/review.py` -> `build_review_rows()`
+- CSV columns: `ali_mvp/output.py` -> `REVIEW_FIELDS`
+- Output path and write call: `ali_mvp/cli.py` -> `run_scrape()`
+
+### Postprocess artifacts
+
+`python -m ali_mvp postprocess --run-dir ...` reads the scrape outputs in one run directory and generates:
+
+- `products_review.csv`
+- `products_zh.csv`
+- `products_filter_audit_zh.csv`
+- `review_only.csv`
+- `products_report.html`
+- `translation_cache.json`
+
+Suggested reviewer usage:
+
+- `products_report.html`
+  - visual review page
+  - best for quick pass/fail inspection and reason filtering
+- `review_only.csv`
+  - smallest handoff file for staff
+  - sorted for manual review with rejected rows first
+- `products_zh.csv`
+  - fuller translated product dataset
+- `products_filter_audit_zh.csv`
+  - full blacklist audit trail with zh labels
+
+Translator options:
+
+- `--translator identity|mymemory`
+- `--translator-email you@example.com` for optional MyMemory `de` parameter
+
+Code locations:
+
+- Orchestration: `ali_mvp/postprocess.py` -> `run_postprocess_for_dir()`
+- HTML rendering: `ali_mvp/reporting.py` -> `render_report_html()`
+- Translation/cache: `ali_mvp/translation.py`
+
 ## Limitations
 
 This MVP is for low-frequency validation. It does not handle proxy pools, CAPTCHA solving, account pools, checkout, or official AliExpress API access.
+
+Current anti-risk status:
+
+- Done in this phase:
+  - optional browser pacing / stealth hardening via `--browser-hardening off|minimal`
+  - captcha page detection
+  - manual captcha wait-and-resume flow
+  - graceful detail-status fallback when captcha is not cleared
+- Not done in this phase:
+  - automatic slider / captcha solving
+  - proxy rotation or IP pool management
+  - advanced fingerprint / header rotation strategy
+  - fully automated recovery under sustained risk-control pressure
 
 ## Manual Validation
 

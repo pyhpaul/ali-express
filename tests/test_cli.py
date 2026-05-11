@@ -99,6 +99,26 @@ def test_parser_accepts_postprocess_run_dir_and_default_browser_hardening():
     assert post_args.run_dir == "data/run-1"
 
 
+def test_postprocess_parser_accepts_translator_options():
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "postprocess",
+            "--run-dir",
+            "data/run-1",
+            "--translator",
+            "mymemory",
+            "--translator-email",
+            "ops@example.com",
+        ]
+    )
+
+    assert args.run_dir == "data/run-1"
+    assert args.translator == "mymemory"
+    assert args.translator_email == "ops@example.com"
+
+
 def test_parser_binds_handlers_for_scrape_and_postprocess():
     parser = build_parser()
 
@@ -111,6 +131,7 @@ def test_parser_binds_handlers_for_scrape_and_postprocess():
 
 def test_run_postprocess_writes_review_zh_and_html(monkeypatch, tmp_path):
     from ali_mvp import cli
+    from ali_mvp.output import read_csv_rows
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -125,7 +146,7 @@ def test_run_postprocess_writes_review_zh_and_html(monkeypatch, tmp_path):
         encoding="utf-8-sig",
     )
 
-    args = argparse.Namespace(run_dir=str(run_dir))
+    args = argparse.Namespace(run_dir=str(run_dir), translator="identity", translator_email="")
 
     code = cli.run_postprocess(args)
 
@@ -133,7 +154,46 @@ def test_run_postprocess_writes_review_zh_and_html(monkeypatch, tmp_path):
     assert (run_dir / "products_review.csv").exists()
     assert (run_dir / "products_zh.csv").exists()
     assert (run_dir / "products_filter_audit_zh.csv").exists()
+    assert (run_dir / "review_only.csv").exists()
     assert (run_dir / "products_report.html").exists()
+    assert (run_dir / "translation_cache.json").exists()
+    assert len(read_csv_rows(run_dir / "products_review.csv")) == 1
+    assert len(read_csv_rows(run_dir / "products_zh.csv")) == 1
+    assert len(read_csv_rows(run_dir / "products_filter_audit_zh.csv")) == 1
+    assert len(read_csv_rows(run_dir / "review_only.csv")) == 1
+
+
+def test_run_postprocess_builds_translator_and_passes_it_through(monkeypatch, tmp_path):
+    from ali_mvp import cli
+
+    run_dir = tmp_path / "run"
+    built: dict[str, object] = {}
+
+    def fake_build_translator(provider: str, *, email: str):
+        built["provider"] = provider
+        built["email"] = email
+        return lambda text: f"ZH::{text}"
+
+    def fake_run_postprocess_for_dir(path: Path, *, translator, translation_cache_namespace):
+        built["run_dir"] = path
+        built["translated"] = translator("Shock pad")
+        built["translation_cache_namespace"] = translation_cache_namespace
+
+    monkeypatch.setattr("ali_mvp.translation.build_translator", fake_build_translator)
+    monkeypatch.setattr("ali_mvp.postprocess.run_postprocess_for_dir", fake_run_postprocess_for_dir)
+
+    args = argparse.Namespace(run_dir=str(run_dir), translator="mymemory", translator_email="ops@example.com")
+
+    code = cli.run_postprocess(args)
+
+    assert code == 0
+    assert built == {
+        "provider": "mymemory",
+        "email": "ops@example.com",
+        "run_dir": run_dir,
+        "translated": "ZH::Shock pad",
+        "translation_cache_namespace": "mymemory",
+    }
 
 
 def test_run_scrape_rejects_non_positive_pages():
@@ -181,6 +241,7 @@ def test_run_scrape_filters_products_before_writing_outputs(monkeypatch, tmp_pat
         pages=1,
         blacklist_file=None,
         reject_keyword=["battery"],
+        browser_hardening="minimal",
     )
 
     product = ProductRecord(
@@ -247,6 +308,43 @@ def test_run_scrape_filters_products_before_writing_outputs(monkeypatch, tmp_pat
     assert captured["products"] == []
     assert captured["audit"][0]["filter_decision"] == "rejected"
     assert captured["review"][0]["title"] == product.title
+
+
+def test_run_scrape_passes_browser_hardening_to_collectors(monkeypatch, tmp_path):
+    from ali_mvp import cli
+
+    args = argparse.Namespace(
+        keyword="women dress",
+        url=None,
+        category_url=None,
+        max_items=1,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        pages=1,
+        blacklist_file=None,
+        reject_keyword=[],
+        browser_hardening="minimal",
+    )
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(cli, "load_filter_groups", lambda path, keywords: [])
+    monkeypatch.setattr(
+        cli,
+        "collect_raw_products",
+        lambda *a, **k: seen.setdefault("hardening", k.get("browser_hardening")) or [],
+    )
+    monkeypatch.setattr(cli, "normalize_products", lambda *a, **k: [])
+    monkeypatch.setattr(cli, "filter_products", lambda products, groups: ([], []))
+    monkeypatch.setattr(cli, "write_products_csv", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "write_filter_audit_csv", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "write_dict_csv", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "write_rank_csv", lambda *a, **k: None)
+
+    cli.run_scrape(args)
+
+    assert seen["hardening"] == "minimal"
 
 
 def test_run_scrape_with_blacklist_reaches_accept_target_from_local_page_replay(monkeypatch, tmp_path):
@@ -404,6 +502,7 @@ def test_collect_products_with_blacklist_attaches_listing_context_before_detail_
         port=9333,
         enrich_detail=True,
         pages=2,
+        browser_hardening="minimal",
     )
 
     assert captured_contexts == [

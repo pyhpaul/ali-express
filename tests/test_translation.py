@@ -1,8 +1,16 @@
 import json
+from urllib.error import HTTPError
 
 import pytest
 
-from ali_mvp.translation import build_reason_zh, load_translation_cache, summarize_attributes_text, translate_texts
+from ali_mvp.translation import (
+    build_reason_zh,
+    build_translator,
+    load_translation_cache,
+    mymemory_translate_text,
+    summarize_attributes_text,
+    translate_texts,
+)
 
 
 def test_summarize_attributes_returns_first_pairs_from_json():
@@ -58,6 +66,215 @@ def test_translate_texts_does_not_cache_fallback_when_backend_raises(tmp_path):
     assert second["Shock pad"] == "减震垫"
     assert calls["count"] == 2
     assert load_translation_cache(cache_path) == {"Shock pad": "减震垫"}
+
+
+def test_translate_texts_falls_back_without_caching_when_backend_returns_non_string(tmp_path):
+    cache_path = tmp_path / "translation_cache.json"
+
+    rows = translate_texts(
+        ["Shock pad"],
+        cache_path=cache_path,
+        translator=lambda text: 123,
+    )
+
+    assert rows == {"Shock pad": "Shock pad"}
+    assert load_translation_cache(cache_path) == {}
+
+
+def test_translate_texts_isolates_cache_by_namespace(tmp_path):
+    cache_path = tmp_path / "translation_cache.json"
+
+    first = translate_texts(
+        ["Shock pad"],
+        cache_path=cache_path,
+        translator=lambda text: text,
+        cache_namespace="identity",
+    )
+    second = translate_texts(
+        ["Shock pad"],
+        cache_path=cache_path,
+        translator=lambda text: "减震垫",
+        cache_namespace="mymemory",
+    )
+
+    assert first["Shock pad"] == "Shock pad"
+    assert second["Shock pad"] == "减震垫"
+
+
+def test_translate_texts_rewrites_legacy_flat_cache_to_default_namespace(tmp_path):
+    cache_path = tmp_path / "translation_cache.json"
+    cache_path.write_text(
+        json.dumps({"Shock pad": "减震垫"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    calls = {"count": 0}
+
+    def fake_translator(text: str) -> str:
+        calls["count"] += 1
+        return "不应被调用"
+
+    rows = translate_texts(
+        ["Shock pad"],
+        cache_path=cache_path,
+        translator=fake_translator,
+    )
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+
+    assert rows == {"Shock pad": "减震垫"}
+    assert calls["count"] == 0
+    assert payload == {"default": {"Shock pad": "减震垫"}}
+
+
+def test_translate_texts_normalizes_mixed_legacy_and_namespaced_cache_payload(tmp_path):
+    cache_path = tmp_path / "translation_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "Shock pad": "Shock pad",
+                "Store A": "Store A",
+                "mymemory": {
+                    "Shock pad": "减震垫",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    calls = {"count": 0}
+
+    def fake_translator(text: str) -> str:
+        calls["count"] += 1
+        return "店铺A"
+
+    rows = translate_texts(
+        ["Shock pad", "Store A"],
+        cache_path=cache_path,
+        translator=fake_translator,
+        cache_namespace="mymemory",
+    )
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+
+    assert rows == {
+        "Shock pad": "减震垫",
+        "Store A": "店铺A",
+    }
+    assert calls["count"] == 1
+    assert payload == {
+        "default": {
+            "Shock pad": "Shock pad",
+            "Store A": "Store A",
+        },
+        "mymemory": {
+            "Shock pad": "减震垫",
+            "Store A": "店铺A",
+        },
+    }
+
+
+def test_build_translator_returns_identity_translator():
+    translator = build_translator("identity")
+
+    assert translator("Shock pad") == "Shock pad"
+
+
+def test_build_translator_rejects_unknown_provider():
+    with pytest.raises(ValueError, match="Unsupported translator provider: unknown"):
+        build_translator("unknown")
+
+
+def test_mymemory_translate_text_extracts_translated_text(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "responseData": {
+                        "translatedText": "减震垫",
+                    },
+                    "responseStatus": 200,
+                }
+            ).encode("utf-8")
+
+    captured: dict[str, str] = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["user_agent"] = request.get_header("User-agent")
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("ali_mvp.translation.urlopen", fake_urlopen)
+
+    translated = mymemory_translate_text("Shock pad", email="test@example.com")
+
+    assert translated == "减震垫"
+    assert "q=Shock+pad" in captured["url"]
+    assert "langpair=en%7Czh-CN" in captured["url"]
+    assert "de=test%40example.com" in captured["url"]
+    assert captured["user_agent"] == "ali_mvp/1.0"
+    assert captured["timeout"] == 15
+
+
+def test_mymemory_translate_text_raises_for_non_200_response_status(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "responseData": {
+                        "translatedText": "减震垫",
+                    },
+                    "responseStatus": 429,
+                    "responseDetails": "rate limit",
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr("ali_mvp.translation.urlopen", lambda request, timeout: FakeResponse())
+
+    with pytest.raises(RuntimeError, match="MyMemory translation failed with status 429: rate limit"):
+        mymemory_translate_text("Shock pad")
+
+
+def test_mymemory_translate_text_raises_for_missing_translated_text(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "responseData": {},
+                    "responseStatus": 200,
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr("ali_mvp.translation.urlopen", lambda request, timeout: FakeResponse())
+
+    with pytest.raises(RuntimeError, match="MyMemory translation response missing translatedText"):
+        mymemory_translate_text("Shock pad")
+
+
+def test_mymemory_translate_text_wraps_http_errors(monkeypatch):
+    def fake_urlopen(request, timeout):
+        raise HTTPError(request.full_url, 503, "Service Unavailable", hdrs=None, fp=None)
+
+    monkeypatch.setattr("ali_mvp.translation.urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="MyMemory translation HTTP error 503: Service Unavailable"):
+        mymemory_translate_text("Shock pad")
 
 
 def test_load_translation_cache_returns_empty_for_invalid_json(tmp_path):

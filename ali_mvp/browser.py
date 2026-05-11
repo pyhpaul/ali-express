@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
 from pathlib import Path
@@ -171,8 +172,14 @@ def collect_raw_products(
     port: int | None = None,
     enrich_detail: bool = False,
     pages: int | None = None,
+    browser_hardening: str = "minimal",
 ) -> list[dict[str, object]]:
-    page = open_listing_page(url, user_data_dir=user_data_dir, port=port)
+    page = open_listing_page(
+        url,
+        user_data_dir=user_data_dir,
+        port=port,
+        browser_hardening=browser_hardening,
+    )
     all_products: list[dict[str, object]] = []
     seen_urls: set[str] = set()
     current_page = 1
@@ -209,10 +216,19 @@ def open_listing_page(
     *,
     user_data_dir: str | None = None,
     port: int | None = None,
+    browser_hardening: str = "minimal",
 ) -> ChromiumPage:
-    page = ChromiumPage(_build_options(user_data_dir=user_data_dir, port=port))
+    page = ChromiumPage(
+        _build_options(
+            user_data_dir=user_data_dir,
+            port=port,
+            browser_hardening=browser_hardening,
+        )
+    )
     page.get(url)
-    time.sleep(3)
+    if browser_hardening == "minimal":
+        _init_page_stealth(page)
+    _pause_after_navigation()
     return page
 
 
@@ -244,8 +260,8 @@ def enrich_listing_products(page: ChromiumPage, products: list[dict[str, object]
 def _collect_current_page(page: ChromiumPage, *, scroll_rounds: int) -> list[dict[str, object]]:
     best: list[dict[str, object]] = []
     for _ in range(scroll_rounds):
-        page.run_js("window.scrollBy(0, Math.max(900, window.innerHeight || 900));")
-        time.sleep(1)
+        _human_scroll_step(page)
+        _sleep_jitter(0.8, 1.2)
         raw = page.run_js(PRODUCT_SCRIPT)
         if isinstance(raw, list) and len(raw) >= len(best):
             best = _prepare_listing_products(raw)
@@ -259,13 +275,14 @@ def _go_to_next_page(page: ChromiumPage, target_page: int) -> bool:
     if not _scroll_to_pagination(page):
         return False
     old_signature = _page_signature(page)
+    _sleep_jitter(0.2, 0.6)
     clicked = page.run_js(NEXT_PAGE_SCRIPT.replace("__TARGET_PAGE__", str(target_page)))
     if not clicked:
         return False
     if not _wait_for_listing_change(page, old_signature):
         return False
     page.run_js("window.scrollTo(0, 0);")
-    time.sleep(1)
+    _pause_after_navigation()
     return True
 
 
@@ -279,7 +296,7 @@ def _scroll_to_pagination(page: ChromiumPage, rounds: int = 12) -> bool:
             "return Math.max(document.body.scrollHeight || 0, document.documentElement.scrollHeight || 0);"
         )
         page.run_js("window.scrollTo(0, Math.max(document.body.scrollHeight || 0, document.documentElement.scrollHeight || 0));")
-        time.sleep(1)
+        _sleep_jitter(0.8, 1.2)
         if page.run_js(PAGINATION_READY_SCRIPT):
             return True
         if height == last_height:
@@ -1035,7 +1052,58 @@ def _strip_internal_product_fields(product: dict[str, object]) -> None:
         product.pop(key, None)
 
 
-def _build_options(user_data_dir: str | None, port: int | None) -> ChromiumOptions:
+def _sleep_jitter(min_s: float, max_s: float) -> None:
+    time.sleep(random.uniform(min_s, max_s))
+
+
+def _human_scroll_step(page: ChromiumPage) -> None:
+    distance = random.randint(700, 1100)
+    page.run_js(f"window.scrollBy(0, {distance});")
+
+
+def _pause_after_navigation() -> None:
+    _sleep_jitter(0.8, 1.6)
+
+
+def _init_page_stealth(page: ChromiumPage) -> None:
+    if not hasattr(page, "run_js"):
+        return
+    page.run_js(
+        """
+return (() => {
+  try {
+    const define = (target, key, value) => {
+      try {
+        Object.defineProperty(target, key, {
+          configurable: true,
+          get: () => value,
+        });
+      } catch (error) {}
+    };
+    define(Navigator.prototype, 'webdriver', undefined);
+    define(Navigator.prototype, 'language', navigator.language || 'en-US');
+    define(Navigator.prototype, 'languages', navigator.languages || ['en-US', 'en']);
+    const originalQuery = window.navigator.permissions && window.navigator.permissions.query;
+    if (originalQuery) {
+      window.navigator.permissions.query = (parameters) => {
+        if (parameters && parameters.name === 'notifications') {
+          return Promise.resolve({ state: Notification.permission });
+        }
+        return originalQuery.call(window.navigator.permissions, parameters);
+      };
+    }
+  } catch (error) {}
+  return true;
+})()
+"""
+    )
+
+
+def _build_options(
+    user_data_dir: str | None,
+    port: int | None,
+    browser_hardening: str = "minimal",
+) -> ChromiumOptions:
     options = ChromiumOptions()
     if port is not None:
         options.set_local_port(port)

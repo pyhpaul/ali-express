@@ -5,8 +5,9 @@ import pytest
 from ali_mvp.output import (
     FILTER_AUDIT_FIELDS,
     FILTER_AUDIT_ZH_FIELDS,
-    REVIEW_FIELDS,
     PRODUCT_ZH_FIELDS,
+    REVIEW_FIELDS,
+    REVIEW_ONLY_FIELDS,
     read_csv_rows,
     write_dict_csv,
     write_filter_audit_csv,
@@ -86,6 +87,9 @@ def test_product_zh_fields_match_expected_columns_and_order():
         "promotion_text_zh",
         "attributes_summary",
         "attributes_summary_zh",
+        "decision_label",
+        "stage_label",
+        "review_note",
     ]
 
 
@@ -110,6 +114,31 @@ def test_filter_audit_zh_fields_match_expected_columns_and_order():
         "warning_groups_zh",
         "warning_terms_zh",
         "reason_zh",
+        "decision_label",
+        "stage_label",
+        "review_note",
+    ]
+
+
+def test_review_only_fields_match_expected_columns_and_order():
+    assert REVIEW_ONLY_FIELDS == [
+        "source_type",
+        "source_value",
+        "title",
+        "title_zh",
+        "product_url",
+        "image_url",
+        "price",
+        "entry_type",
+        "shop_name",
+        "shop_name_zh",
+        "promotion_text",
+        "promotion_text_zh",
+        "attributes_summary",
+        "attributes_summary_zh",
+        "decision_label",
+        "stage_label",
+        "review_note",
     ]
 
 
