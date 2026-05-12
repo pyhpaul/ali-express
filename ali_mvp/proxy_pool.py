@@ -71,7 +71,7 @@ class ProxyPool:
         if current_key and current_key in self.proxy_keys:
             self.current_index = self.proxy_keys.index(current_key)
         elif self.proxies:
-            self.current_index = min(current_index, len(self.proxies) - 1)
+            self.current_index = max(0, min(current_index, len(self.proxies) - 1))
         self.block_events_on_current = max(0, block_events)
 
     def mark_blocked(self) -> str:
