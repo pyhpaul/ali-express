@@ -11,6 +11,11 @@ from typing import Any
 
 from ali_mvp.v2rayn import V2RayNNode, V2RayNSource
 
+DEFAULT_START_PORT = 11081
+DEFAULT_PROBE_HOST = "www.aliexpress.com"
+DEFAULT_PROBE_TIMEOUT = 10.0
+CLOSE_TIMEOUT = 5.0
+
 
 @dataclass
 class SidecarEndpoint:
@@ -34,18 +39,12 @@ class SidecarRuntime:
 
     def close(self) -> None:
         for endpoint in self.endpoints:
-            process = endpoint.process
-            if process is None:
-                continue
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except Exception:
-                    process.kill()
+            _stop_process(endpoint.process)
+            endpoint.process = None
 
 
 def build_sidecar_config(base_config: dict[str, Any], *, node: V2RayNNode, local_port: int) -> dict[str, Any]:
+    _validate_base_config(base_config)
     config = copy.deepcopy(base_config)
     config["inbounds"][0]["port"] = local_port
     config["outbounds"][0]["settings"]["servers"] = [
@@ -73,38 +72,46 @@ def build_sidecar_config(base_config: dict[str, Any], *, node: V2RayNNode, local
     return config
 
 
-def start_sidecar_runtime(source: V2RayNSource, *, runtime_dir: Path, start_port: int = 11081) -> SidecarRuntime:
+def start_sidecar_runtime(source: V2RayNSource, *, runtime_dir: Path, start_port: int = DEFAULT_START_PORT) -> SidecarRuntime:
     base_config = json.loads(source.base_config_path.read_text(encoding="utf-8"))
     runtime_dir.mkdir(parents=True, exist_ok=True)
     endpoints: list[SidecarEndpoint] = []
-    for offset, node in enumerate(source.nodes):
-        local_port = start_port + offset
-        config_path = runtime_dir / f"{node.sort_index:03d}-{node.index_id}.json"
-        config = build_sidecar_config(base_config, node=node, local_port=local_port)
-        config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-        process = _launch_process(
-            node=node,
-            xray_path=source.xray_path,
-            asset_dir=source.asset_dir,
-            config_path=config_path,
-        )
-        proxy_url = f"socks5://127.0.0.1:{local_port}"
-        healthy = _wait_for_port("127.0.0.1", local_port, 10.0) and _probe_tls_over_socks(
-            proxy_url, "www.aliexpress.com", 10.0
-        )
-        endpoints.append(
-            SidecarEndpoint(
-                key=node.index_id,
-                label=node.remarks,
-                proxy_url=proxy_url,
-                local_port=local_port,
+    runtime = SidecarRuntime(runtime_dir=runtime_dir, endpoints=endpoints)
+    try:
+        for offset, node in enumerate(source.nodes):
+            local_port = start_port + offset
+            config_path = runtime_dir / f"{node.sort_index:03d}-{node.index_id}.json"
+            config = build_sidecar_config(base_config, node=node, local_port=local_port)
+            config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+            process = _launch_process(
+                node=node,
+                xray_path=source.xray_path,
+                asset_dir=source.asset_dir,
                 config_path=config_path,
-                process=process,
-                healthy=healthy,
-                failure_reason="" if healthy else "probe_failed",
             )
-        )
-    return SidecarRuntime(runtime_dir=runtime_dir, endpoints=endpoints)
+            proxy_url = f"socks5://127.0.0.1:{local_port}"
+            healthy = _wait_for_port("127.0.0.1", local_port, DEFAULT_PROBE_TIMEOUT) and _probe_tls_over_socks(
+                proxy_url, DEFAULT_PROBE_HOST, DEFAULT_PROBE_TIMEOUT
+            )
+            if not healthy:
+                _stop_process(process)
+                process = None
+            endpoints.append(
+                SidecarEndpoint(
+                    key=node.index_id,
+                    label=node.remarks,
+                    proxy_url=proxy_url,
+                    local_port=local_port,
+                    config_path=config_path,
+                    process=process,
+                    healthy=healthy,
+                    failure_reason="" if healthy else "probe_failed",
+                )
+            )
+    except Exception:
+        runtime.close()
+        raise
+    return runtime
 
 
 def _launch_process(*, node: V2RayNNode, xray_path: Path, asset_dir: Path, config_path: Path) -> Any:
@@ -118,9 +125,32 @@ def _launch_process(*, node: V2RayNNode, xray_path: Path, asset_dir: Path, confi
     )
 
 
+def _validate_base_config(base_config: dict[str, Any]) -> None:
+    if not isinstance(base_config.get("inbounds"), list) or not base_config["inbounds"]:
+        raise ValueError("base config missing inbounds[0]")
+    if not isinstance(base_config.get("outbounds"), list) or not base_config["outbounds"]:
+        raise ValueError("base config missing outbounds[0]")
+    first_outbound = base_config["outbounds"][0]
+    if not isinstance(first_outbound, dict) or not isinstance(first_outbound.get("settings"), dict):
+        raise ValueError("base config missing outbounds[0].settings")
+    if "servers" not in first_outbound["settings"]:
+        raise ValueError("base config missing outbounds[0].settings.servers")
+
+
+def _stop_process(process: Any) -> None:
+    if process is None:
+        return
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=CLOSE_TIMEOUT)
+        except Exception:
+            process.kill()
+
+
 def _wait_for_port(host: str, port: int, timeout: float) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         try:
             with socket.create_connection((host, port), timeout=0.5):
                 return True
