@@ -8,6 +8,7 @@ from ali_mvp.filtering import FilterGroup
 from ali_mvp.output import read_csv_rows
 from ali_mvp.run_state import RunManifest
 from ali_mvp.scoring import ProductRecord
+from ali_mvp.session_guard import SessionPreflightResult
 
 
 def _manifest(tmp_path, *, pages: int | None = 1, enrich_detail: bool = True) -> RunManifest:
@@ -117,6 +118,34 @@ def test_run_new_scrape_marks_blocked_run_and_writes_outputs(tmp_path, monkeypat
     assert (tmp_path / "products_filter_audit.csv").exists()
     assert (tmp_path / "products_review.csv").exists()
     assert (tmp_path / "category_rank.csv").exists()
+
+
+def test_run_new_scrape_stops_when_session_preflight_reports_phone_verification(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+
+    class FakePage:
+        url = "https://login.aliexpress.com/phone"
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(
+        scrape_runner,
+        "run_session_preflight",
+        lambda page, search_url, warm_up: SessionPreflightResult(
+            status="phone_verification_required",
+            risk_level="high",
+            page_type="verify",
+            reasons=["phone_verification_required"],
+            warmed_up=False,
+        ),
+    )
+
+    result = scrape_runner.run_new_scrape(
+        manifest=_manifest(tmp_path, pages=1, enrich_detail=False),
+        groups=[],
+        run_dir=tmp_path,
+    )
+
+    assert result == scrape_runner.RunResult(exit_code=6, accepted_count=0, blocked=False)
 
 
 def test_run_new_scrape_fails_when_v2rayn_provider_has_no_healthy_proxy(tmp_path, monkeypatch):

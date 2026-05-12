@@ -19,6 +19,7 @@ from .proxy_pool import NoHealthyProxyError, ProxyPool
 from .review import build_review_rows
 from .run_state import RunManifest, RunState, RunStateStore
 from .scoring import ProductRecord, aggregate_rank, parse_count, parse_float
+from .session_guard import run_session_preflight
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,19 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
             user_agent=manifest.user_agent,
             accept_language=manifest.accept_language,
         )
+        preflight = run_session_preflight(page, search_url=manifest.url, warm_up=True)
+        if preflight.status != "ready":
+            failed_state = replace(
+                RunState(status="running"),
+                status="failed",
+                last_error=preflight.status,
+                last_block_reason=preflight.status,
+                last_blocked_url=str(getattr(page, "url", "") or manifest.url),
+            )
+            store.save_state(failed_state)
+            store.save_summary(failed_state)
+            _write_outputs(run_dir, failed_state.accepted_products, failed_state.audit_rows)
+            return RunResult(exit_code=6, accepted_count=failed_state.accepted_count, blocked=False)
         return _run_scrape_from_state(
             manifest=manifest,
             groups=groups,

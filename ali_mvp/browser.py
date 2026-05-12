@@ -163,6 +163,20 @@ return (() => {
 })()
 """
 
+SESSION_PREFLIGHT_SCRIPT = r"""
+return (() => {
+  const body = String((document.body && (document.body.innerText || document.body.textContent)) || '');
+  const href = location.href;
+  return {
+    pageType: /wholesale|SearchText/i.test(href) ? 'search' : (/login|verify/i.test(href) ? 'verify' : 'unknown'),
+    captcha: /captcha|slider|verify you are human/i.test(body),
+    loginRequired: /sign in|log in/i.test(body) && /account|join/i.test(body),
+    phoneVerifyRequired: /phone number|手机号|verification code/i.test(body),
+    searchResultsVisible: !!document.querySelector('a[href*="/item/"], a[href*="/_/promo/"], [class*="search-card"]')
+  };
+})()
+"""
+
 
 def collect_raw_products(
     url: str,
@@ -240,6 +254,19 @@ def open_listing_page(
 
 def collect_listing_page_products(page: ChromiumPage, *, scroll_rounds: int = 8) -> list[dict[str, object]]:
     return _collect_current_page(page, scroll_rounds=scroll_rounds)
+
+
+def collect_session_signals(page: ChromiumPage) -> dict[str, object]:
+    payload = page.run_js(SESSION_PREFLIGHT_SCRIPT)
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def warm_up_search_session(page: ChromiumPage) -> None:
+    _pause_after_navigation()
+    _human_scroll_step(page)
+    _sleep_jitter(0.4, 0.8)
+    _human_scroll_step(page)
+    _sleep_jitter(0.6, 1.0)
 
 
 def dedupe_listing_products(
