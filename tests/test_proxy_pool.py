@@ -1,8 +1,10 @@
+from importlib import import_module
+
 import pytest
 
 from ali_mvp.proxy_health import ProxyHealthStore
 from ali_mvp.proxy_pool import NoHealthyProxyError, ProxyPool
-from ali_mvp.run_state import RunManifest
+from ali_mvp.run_state import RunManifest, RunState
 from ali_mvp.sidecar_proxy import SidecarEndpoint, SidecarRuntime
 
 
@@ -209,3 +211,51 @@ def test_proxy_pool_skips_nodes_in_cooldown(tmp_path):
     pool.health_records = pool.health_store.load()
 
     assert pool._eligible_indices(now_iso="2026-05-12T12:00:00Z") == [1]
+
+
+def test_proxy_pool_record_event_can_target_blocked_key_before_rotation(tmp_path):
+    health_file = tmp_path / "_proxy_health.json"
+    pool = ProxyPool(
+        proxies=["socks5://127.0.0.1:11080", "socks5://127.0.0.1:11081"],
+        proxy_keys=["node-a", "node-b"],
+        proxy_labels=["A", "B"],
+        max_blocks_per_proxy=1,
+    )
+    pool.health_store = ProxyHealthStore(health_file)
+    pool.health_records = {}
+
+    blocked_proxy_key = pool.current_key()
+    pool.mark_blocked()
+    pool.record_event("captcha", now_iso="2026-05-12T12:34:56Z", proxy_key=blocked_proxy_key)
+
+    records = pool.health_store.load()
+
+    assert pool.current_key() == "node-b"
+    assert records["node-a"].last_event == "captcha"
+    assert records["node-a"].last_failed_at == "2026-05-12T12:34:56Z"
+    assert "node-b" not in records
+
+
+def test_record_proxy_health_uses_runtime_timestamp_helper(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    health_file = tmp_path / "_proxy_health.json"
+    pool = ProxyPool(
+        proxies=["socks5://127.0.0.1:11080"],
+        proxy_keys=["node-a"],
+        proxy_labels=["A"],
+        max_blocks_per_proxy=2,
+    )
+    pool.health_store = ProxyHealthStore(health_file)
+    pool.health_records = {}
+    monkeypatch.setattr(scrape_runner, "_utc_now_iso", lambda: "2026-05-12T12:34:56Z")
+
+    scrape_runner._record_proxy_health(
+        proxy_pool=pool,
+        state=RunState(last_error="proxy disconnected"),
+        blocked=False,
+    )
+
+    record = pool.health_store.load()["node-a"]
+
+    assert record.last_failed_at == "2026-05-12T12:34:56Z"
+    assert record.cooldown_until == "2026-05-12T12:49:56Z"

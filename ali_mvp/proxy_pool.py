@@ -99,8 +99,8 @@ class ProxyPool:
         if self.runtime is not None:
             self.runtime.close()
 
-    def record_event(self, event: str, *, now_iso: str) -> None:
-        proxy_key = self.current_key()
+    def record_event(self, event: str, *, now_iso: str, proxy_key: str = "") -> None:
+        proxy_key = proxy_key or self.current_key()
         if not proxy_key or self.health_store is None:
             return
         self.health_records[proxy_key] = self.health_store.mark_result(proxy_key, event=event, now_iso=now_iso)

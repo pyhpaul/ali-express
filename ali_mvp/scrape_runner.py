@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -30,6 +30,7 @@ class RunResult:
     exit_code: int
     accepted_count: int
     blocked: bool = False
+    blocked_proxy_key: str = field(default="", compare=False)
 
 
 def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir: Path) -> RunResult:
@@ -109,7 +110,12 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
             state=running_state,
             start_page=1,
         )
-        _record_proxy_health(proxy_pool=proxy_pool, state=store.load_state(), blocked=result.blocked, now_iso=manifest.created_at)
+        _record_proxy_health(
+            proxy_pool=proxy_pool,
+            state=store.load_state(),
+            blocked=result.blocked,
+            proxy_key=result.blocked_proxy_key,
+        )
         return result
     finally:
         proxy_pool.close()
@@ -220,7 +226,7 @@ def resume_scrape(
                 review_context_rows=review_context_rows,
             )
             if blocked:
-                _record_proxy_health(proxy_pool=proxy_pool, state=resumed_state, blocked=True, now_iso=manifest.created_at)
+                _record_proxy_health(proxy_pool=proxy_pool, state=resumed_state, blocked=True)
                 return RunResult(
                     exit_code=3,
                     accepted_count=resumed_state.accepted_count,
@@ -237,7 +243,7 @@ def resume_scrape(
                 completed_state.audit_rows,
                 review_context_rows=review_context_rows,
             )
-            _record_proxy_health(proxy_pool=proxy_pool, state=completed_state, blocked=False, now_iso=manifest.created_at)
+            _record_proxy_health(proxy_pool=proxy_pool, state=completed_state, blocked=False)
             return RunResult(
                 exit_code=_completed_exit_code(completed_state.accepted_count),
                 accepted_count=completed_state.accepted_count,
@@ -254,7 +260,12 @@ def resume_scrape(
             state=resumed_state,
             start_page=max(1, resumed_state.current_listing_page + 1),
         )
-        _record_proxy_health(proxy_pool=proxy_pool, state=store.load_state(), blocked=result.blocked, now_iso=manifest.created_at)
+        _record_proxy_health(
+            proxy_pool=proxy_pool,
+            state=store.load_state(),
+            blocked=result.blocked,
+            proxy_key=result.blocked_proxy_key,
+        )
         return result
     finally:
         proxy_pool.close()
@@ -482,6 +493,7 @@ def _run_scrape_from_state(
             ),
         )
         if blocked:
+            blocked_proxy_key = proxy_pool.current_key()
             proxy_pool.mark_blocked()
             checkpoint_state = replace(
                 checkpoint_state,
@@ -499,7 +511,12 @@ def _run_scrape_from_state(
                 audit_rows,
                 review_context_rows=review_context_rows,
             )
-            return RunResult(exit_code=3, accepted_count=len(accepted_products), blocked=True)
+            return RunResult(
+                exit_code=3,
+                accepted_count=len(accepted_products),
+                blocked=True,
+                blocked_proxy_key=blocked_proxy_key,
+            )
 
         if len(accepted_products) >= manifest.max_items:
             break
@@ -715,16 +732,21 @@ def _with_proxy_state(state: RunState, proxy_pool: ProxyPool) -> RunState:
     )
 
 
-def _record_proxy_health(*, proxy_pool: ProxyPool, state: RunState, blocked: bool, now_iso: str) -> None:
+def _record_proxy_health(*, proxy_pool: ProxyPool, state: RunState, blocked: bool, proxy_key: str = "") -> None:
     record_event = getattr(proxy_pool, "record_event", None)
     if record_event is None:
         return
+    now_iso = _utc_now_iso()
     if blocked:
-        record_event("captcha", now_iso=now_iso)
+        record_event("captcha", now_iso=now_iso, proxy_key=proxy_key)
     elif state.last_error:
-        record_event("timeout", now_iso=now_iso)
+        record_event("timeout", now_iso=now_iso, proxy_key=proxy_key)
     else:
-        record_event("success", now_iso=now_iso)
+        record_event("success", now_iso=now_iso, proxy_key=proxy_key)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _write_outputs(
