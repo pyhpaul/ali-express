@@ -36,6 +36,33 @@ Proxy and browser identity:
 - `--user-agent "ua-fixed"`
 - `--accept-language "en-US,en;q=0.9"`
 
+### v2rayN sidecar proxy pool
+
+Use the local v2rayN installation as a proxy source:
+
+```bash
+python -m ali_mvp scrape \
+  --keyword "Home appliance accessories" \
+  --proxy-provider v2rayn \
+  --v2rayn-dir "C:\Users\lxy\Desktop\v2rayN-windows-64" \
+  --enrich-detail \
+  --user-data-dir .browser-profile
+```
+
+Behavior in this phase:
+
+- reads nodes from `guiConfigs/guiNDB.db -> ProfileItem`
+- generates per-node sidecar `xray` configs under `<run_dir>/proxy_runtime`
+- probes each local socks5 endpoint before opening the browser
+- picks one healthy endpoint for the current run
+- cleans sidecar processes on exit
+
+Current limitations:
+
+- no mid-run live proxy hot-swap inside one browser session
+- no automatic CAPTCHA solving
+- no adaptive long-term health scoring beyond startup probe and per-run rotation
+
 Pagination semantics:
 
 - `--max-items` is the total number of products requested for the run.
