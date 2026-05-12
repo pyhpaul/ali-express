@@ -170,9 +170,29 @@ def test_resume_scrape_restores_proxy_key_and_closes_runtime(tmp_path, monkeypat
         v2rayn_dir="C:/Users/test/v2rayN",
     )
     store.save_manifest(manifest)
-    store.save_state(RunState(status="completed", current_proxy_index=1, current_proxy_key="node-b"))
+    store.save_state(
+        RunState(
+            status="blocked",
+            current_proxy_index=1,
+            current_proxy_key="node-b",
+            pending_detail_queue=[
+                {
+                    "title": "Dress Pending",
+                    "url": "https://www.aliexpress.com/item/1999.html",
+                    "cardUrl": "https://www.aliexpress.com/item/1999.html",
+                    "resolvedProductUrl": "https://www.aliexpress.com/item/1999.html",
+                    "_listingBaseUrl": manifest.url,
+                    "_listingPageUrl": manifest.url,
+                    "_listingPageNumber": 1,
+                }
+            ],
+        )
+    )
 
     seen = {"restore": None, "closed": False}
+
+    class FakePage:
+        url = manifest.url
 
     class FakePool:
         def __init__(self):
@@ -185,16 +205,204 @@ def test_resume_scrape_restores_proxy_key_and_closes_runtime(tmp_path, monkeypat
         def current(self):
             return "socks5://127.0.0.1:11082"
 
+        def current_key(self):
+            return "node-b"
+
         def close(self):
             seen["closed"] = True
 
     monkeypatch.setattr("ali_mvp.scrape_runner.ProxyPool.from_manifest", lambda **kwargs: FakePool())
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(
+        scrape_runner,
+        "enrich_single_product_detail",
+        lambda page, product: product.__setitem__("detailStatus", "detail_enriched") or "detail_enriched",
+    )
 
     result = scrape_runner.resume_scrape(tmp_path, details_only=True)
 
     assert result.exit_code == 0
     assert seen["restore"] == ("node-b", 1, 0)
     assert seen["closed"] is True
+
+
+def test_resume_scrape_fails_when_v2rayn_provider_has_no_healthy_proxy(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.proxy_pool import NoHealthyProxyError
+    from ali_mvp.run_state import RunState, RunStateStore
+
+    manifest = RunManifest(
+        source_type="keyword",
+        source_value="pump part",
+        url="https://www.aliexpress.com/wholesale?SearchText=pump+part",
+        max_items=20,
+        pages=None,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        blacklist_file=None,
+        proxy_provider="v2rayn",
+        v2rayn_dir="C:/Users/test/v2rayN",
+    )
+    existing_product = _product_record(
+        product_url="https://www.aliexpress.com/item/2401.html",
+        title="Dress Resume",
+        scraped_at="2026-05-11T08:00:00Z",
+    )
+    state = RunState(
+        status="blocked",
+        current_listing_page=1,
+        raw_products_count=1,
+        normalized_count=1,
+        accepted_count=1,
+        seen_product_keys=[existing_product.product_url],
+        accepted_products=[existing_product],
+        audit_rows=[],
+        pending_detail_queue=[],
+        current_proxy_index=1,
+        current_proxy_key="node-b",
+        block_events_on_current_proxy=1,
+    )
+    store = RunStateStore(tmp_path)
+    store.save_manifest(manifest)
+    store.save_state(state)
+    store.save_summary(state)
+
+    monkeypatch.setattr(
+        "ali_mvp.scrape_runner.ProxyPool.from_manifest",
+        lambda **kwargs: (_ for _ in ()).throw(NoHealthyProxyError("no healthy proxy")),
+    )
+
+    result = scrape_runner.resume_scrape(tmp_path, details_only=False)
+    failed_state = store.load_state()
+
+    assert result == scrape_runner.RunResult(exit_code=5, accepted_count=1, blocked=False)
+    assert failed_state.status == "failed"
+    assert failed_state.last_error == "no healthy proxy"
+    assert failed_state.accepted_count == 1
+    assert failed_state.accepted_products == [existing_product]
+
+
+def test_resume_scrape_details_only_completed_short_circuits_before_provider(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunState, RunStateStore
+
+    manifest = _manifest(tmp_path, pages=2, enrich_detail=True)
+    existing_product = _product_record(
+        product_url="https://www.aliexpress.com/item/2402.html",
+        title="Dress Done",
+        scraped_at=manifest.created_at,
+    )
+    state = RunState(
+        status="completed",
+        current_listing_page=2,
+        raw_products_count=1,
+        normalized_count=1,
+        accepted_count=1,
+        seen_product_keys=[existing_product.product_url],
+        accepted_products=[existing_product],
+        audit_rows=[],
+        pending_detail_queue=[],
+    )
+    store = RunStateStore(tmp_path)
+    store.save_manifest(manifest)
+    store.save_state(state)
+    store.save_summary(state)
+
+    monkeypatch.setattr(
+        "ali_mvp.scrape_runner.ProxyPool.from_manifest",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("provider should not be created")),
+    )
+
+    result = scrape_runner.resume_scrape(tmp_path, details_only=True)
+
+    assert result == scrape_runner.RunResult(exit_code=0, accepted_count=1, blocked=False)
+
+
+def test_resume_scrape_persists_restored_proxy_state_after_pending_details(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunState, RunStateStore
+
+    manifest = RunManifest(
+        source_type="keyword",
+        source_value="pump part",
+        url="https://www.aliexpress.com/wholesale?SearchText=pump+part",
+        max_items=20,
+        pages=None,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=True,
+        blacklist_file=None,
+        proxy_provider="v2rayn",
+        v2rayn_dir="C:/Users/test/v2rayN",
+        created_at="2026-05-11T08:00:00Z",
+    )
+    pending_product = {
+        "title": "Dress Pending",
+        "url": "https://www.aliexpress.com/item/2403.html",
+        "cardUrl": "https://www.aliexpress.com/item/2403.html",
+        "resolvedProductUrl": "https://www.aliexpress.com/item/2403.html",
+        "_listingBaseUrl": manifest.url,
+        "_listingPageUrl": manifest.url,
+        "_listingPageNumber": 1,
+    }
+    state = RunState(
+        status="blocked",
+        current_listing_page=1,
+        raw_products_count=1,
+        normalized_count=0,
+        accepted_count=0,
+        seen_product_keys=[pending_product["resolvedProductUrl"]],
+        accepted_products=[],
+        audit_rows=[],
+        pending_detail_queue=[dict(pending_product)],
+        current_proxy_index=0,
+        current_proxy_key="node-a",
+        block_events_on_current_proxy=0,
+    )
+    store = RunStateStore(tmp_path)
+    store.save_manifest(manifest)
+    store.save_state(state)
+    store.save_summary(state)
+
+    class FakePage:
+        url = manifest.url
+
+    class FakePool:
+        def __init__(self):
+            self.current_index = 1
+            self.block_events_on_current = 0
+
+        def restore_selection(self, *, current_key, current_index, block_events):
+            self.current_index = 1
+            self.block_events_on_current = 0
+
+        def current(self):
+            return "socks5://127.0.0.1:11082"
+
+        def current_key(self):
+            return "node-b"
+
+        def close(self):
+            return None
+
+    def fake_detail(page, product):
+        product["detailStatus"] = "detail_enriched"
+        return "detail_enriched"
+
+    monkeypatch.setattr("ali_mvp.scrape_runner.ProxyPool.from_manifest", lambda **kwargs: FakePool())
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(scrape_runner, "enrich_single_product_detail", fake_detail)
+
+    result = scrape_runner.resume_scrape(tmp_path, details_only=True)
+    resumed_state = store.load_state()
+
+    assert result == scrape_runner.RunResult(exit_code=0, accepted_count=1, blocked=False)
+    assert resumed_state.current_proxy_index == 1
+    assert resumed_state.current_proxy_key == "node-b"
+    assert resumed_state.block_events_on_current_proxy == 0
 
 
 def test_run_new_scrape_persists_proxy_progress_and_browser_identity_on_block(tmp_path, monkeypatch):

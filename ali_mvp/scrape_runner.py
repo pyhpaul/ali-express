@@ -77,6 +77,16 @@ def resume_scrape(
     manifest = store.load_manifest()
     state = store.load_state()
 
+    if details_only and not state.pending_detail_queue and state.status == "completed":
+        store.save_state(state)
+        store.save_summary(state)
+        _write_outputs(run_dir, state.accepted_products, state.audit_rows)
+        return RunResult(
+            exit_code=0,
+            accepted_count=state.accepted_count,
+            blocked=False,
+        )
+
     if details_only and not state.pending_detail_queue and state.status != "completed":
         failed_details_only_state = replace(
             state,
@@ -111,7 +121,15 @@ def resume_scrape(
             accept_language=effective_accept_language,
         )
 
-    proxy_pool = ProxyPool.from_manifest(manifest=proxy_manifest, run_dir=run_dir)
+    try:
+        proxy_pool = ProxyPool.from_manifest(manifest=proxy_manifest, run_dir=run_dir)
+    except NoHealthyProxyError as error:
+        failed_state = replace(state, status="failed", last_error=str(error))
+        store.save_state(failed_state)
+        store.save_summary(failed_state)
+        _write_outputs(run_dir, failed_state.accepted_products, failed_state.audit_rows)
+        return RunResult(exit_code=5, accepted_count=failed_state.accepted_count, blocked=False)
+
     proxy_pool.restore_selection(
         current_key=state.current_proxy_key,
         current_index=state.current_proxy_index,
@@ -119,16 +137,6 @@ def resume_scrape(
     )
 
     try:
-        if details_only and not state.pending_detail_queue and state.status == "completed":
-            store.save_state(state)
-            store.save_summary(state)
-            _write_outputs(run_dir, state.accepted_products, state.audit_rows)
-            return RunResult(
-                exit_code=0,
-                accepted_count=state.accepted_count,
-                blocked=False,
-            )
-
         page = open_listing_page(
             manifest.url,
             user_data_dir=manifest.user_data_dir,
@@ -149,6 +157,7 @@ def resume_scrape(
                 manifest=manifest,
                 groups=groups,
             )
+            resumed_state = _with_proxy_state(resumed_state, proxy_pool)
             store.save_state(resumed_state)
             store.save_summary(resumed_state)
             _write_outputs(run_dir, resumed_state.accepted_products, resumed_state.audit_rows)
@@ -160,7 +169,7 @@ def resume_scrape(
                 )
 
         if details_only:
-            completed_state = replace(resumed_state, status="completed")
+            completed_state = _with_proxy_state(replace(resumed_state, status="completed"), proxy_pool)
             store.save_state(completed_state)
             store.save_summary(completed_state)
             _write_outputs(run_dir, completed_state.accepted_products, completed_state.audit_rows)
@@ -490,6 +499,15 @@ def _move_to_listing_page(page: object, target_page: int) -> bool:
 
 def _product_url(product: dict[str, object]) -> str:
     return str(product.get("resolvedProductUrl") or product.get("url") or "")
+
+
+def _with_proxy_state(state: RunState, proxy_pool: ProxyPool) -> RunState:
+    return replace(
+        state,
+        current_proxy_index=proxy_pool.current_index,
+        current_proxy_key=proxy_pool.current_key(),
+        block_events_on_current_proxy=proxy_pool.block_events_on_current,
+    )
 
 
 def _write_outputs(run_dir: Path, accepted_products: list[ProductRecord], audit_rows: list[dict[str, str]]) -> None:
