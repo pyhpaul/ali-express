@@ -87,6 +87,32 @@ def test_run_state_store_round_trip_json_files(tmp_path):
     assert isinstance(store.load_state().accepted_products[0], ProductRecord)
 
 
+def test_run_manifest_and_state_roundtrip_preserve_proxy_provider(tmp_path):
+    store = RunStateStore(tmp_path)
+    manifest = RunManifest(
+        source_type="keyword",
+        source_value="kettle parts",
+        url="https://www.aliexpress.com/wholesale?SearchText=kettle+parts",
+        max_items=20,
+        pages=None,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        blacklist_file=None,
+        proxy_provider="v2rayn",
+        v2rayn_dir="C:/Users/test/v2rayN",
+    )
+    state = RunState(current_proxy_index=1, current_proxy_key="node-b")
+
+    store.save_manifest(manifest)
+    store.save_state(state)
+
+    assert store.load_manifest().proxy_provider == "v2rayn"
+    assert store.load_manifest().v2rayn_dir == "C:/Users/test/v2rayN"
+    assert store.load_state().current_proxy_key == "node-b"
+
+
 def test_run_state_to_summary_marks_blocked_runs(tmp_path):
     store = RunStateStore(tmp_path)
     state = RunState(

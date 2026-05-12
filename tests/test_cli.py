@@ -109,6 +109,25 @@ def test_scrape_parser_accepts_proxy_and_language_options():
     assert args.accept_language == "en-US,en;q=0.9"
 
 
+def test_scrape_parser_accepts_v2rayn_provider():
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "scrape",
+            "--keyword",
+            "home appliance accessories",
+            "--proxy-provider",
+            "v2rayn",
+            "--v2rayn-dir",
+            "C:/Users/test/v2rayN",
+        ]
+    )
+
+    assert args.proxy_provider == "v2rayn"
+    assert args.v2rayn_dir == "C:/Users/test/v2rayN"
+
+
 def test_scrape_parser_rejects_invalid_browser_hardening_value():
     parser = build_parser()
 

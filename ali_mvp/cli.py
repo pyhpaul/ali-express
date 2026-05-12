@@ -55,6 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="minimal",
         help="Apply optional browser pacing/stealth hardening.",
     )
+    scrape.add_argument(
+        "--proxy-provider",
+        choices=("manual", "v2rayn"),
+        default="manual",
+        help="Proxy provider: existing manual proxies or v2rayN sidecar pool.",
+    )
+    scrape.add_argument(
+        "--v2rayn-dir",
+        default="",
+        help="Root directory of the local v2rayN installation when --proxy-provider v2rayn is used.",
+    )
     scrape.add_argument("--proxy", default="", help="Single proxy URL for this run.")
     scrape.add_argument("--proxy-file", default="", help="Text file with one proxy per line.")
     scrape.add_argument(
@@ -153,10 +164,16 @@ def run_resume(args: argparse.Namespace) -> int:
 def run_scrape(args: argparse.Namespace) -> int:
     source_type, source_value, url = _resolve_source(args)
     browser_hardening = getattr(args, "browser_hardening", "minimal")
+    proxy_provider = getattr(args, "proxy_provider", "manual")
+    v2rayn_dir = getattr(args, "v2rayn_dir", "")
     if args.max_items < 1:
         raise SystemExit("--max-items must be greater than 0")
     if args.pages is not None and args.pages < 1:
         raise SystemExit("--pages must be greater than 0")
+    if proxy_provider == "v2rayn" and not v2rayn_dir:
+        raise SystemExit("--v2rayn-dir is required when --proxy-provider v2rayn")
+    if proxy_provider != "manual" and (args.proxy or args.proxy_file):
+        raise SystemExit("--proxy and --proxy-file are only supported with --proxy-provider manual")
 
     run_at = datetime.now().replace(microsecond=0)
     scraped_at = run_at.astimezone(timezone.utc).isoformat()
@@ -174,6 +191,8 @@ def run_scrape(args: argparse.Namespace) -> int:
         blacklist_file=args.blacklist_file,
         reject_keyword=list(args.reject_keyword),
         browser_hardening=browser_hardening,
+        proxy_provider=proxy_provider,
+        v2rayn_dir=v2rayn_dir,
         proxy=args.proxy,
         proxy_file=args.proxy_file,
         max_blocks_per_proxy=args.max_blocks_per_proxy,

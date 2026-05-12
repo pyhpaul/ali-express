@@ -22,6 +22,8 @@ class RunManifest:
     blacklist_file: str | None
     reject_keyword: list[str] = field(default_factory=list)
     browser_hardening: str = "off"
+    proxy_provider: str = "manual"
+    v2rayn_dir: str = ""
     proxy: str = ""
     proxy_file: str = ""
     max_blocks_per_proxy: int = 0
@@ -44,6 +46,8 @@ class RunManifest:
             blacklist_file=payload["blacklist_file"],
             reject_keyword=list(payload.get("reject_keyword", [])),
             browser_hardening=_normalize_browser_hardening(payload.get("browser_hardening", "off")),
+            proxy_provider=_normalize_proxy_provider(payload.get("proxy_provider", "manual")),
+            v2rayn_dir=payload.get("v2rayn_dir", ""),
             proxy=payload.get("proxy", ""),
             proxy_file=payload.get("proxy_file", ""),
             max_blocks_per_proxy=payload.get("max_blocks_per_proxy", 0),
@@ -67,6 +71,7 @@ class RunState:
     accepted_products: list[ProductRecord] = field(default_factory=list)
     audit_rows: list[dict[str, Any]] = field(default_factory=list)
     pending_detail_queue: list[dict[str, Any]] = field(default_factory=list)
+    current_proxy_key: str = ""
     current_proxy_index: int = 0
     block_events_on_current_proxy: int = 0
     last_block_reason: str = ""
@@ -85,6 +90,7 @@ class RunState:
             accepted_products=[_deserialize_product_record(item) for item in payload.get("accepted_products", [])],
             audit_rows=list(payload.get("audit_rows", [])),
             pending_detail_queue=_deserialize_pending_detail_queue(payload.get("pending_detail_queue", [])),
+            current_proxy_key=payload.get("current_proxy_key", ""),
             current_proxy_index=payload.get("current_proxy_index", 0),
             block_events_on_current_proxy=payload.get("block_events_on_current_proxy", 0),
             last_block_reason=payload.get("last_block_reason", ""),
@@ -103,6 +109,7 @@ class RunState:
             "accepted_products": [asdict(product) for product in self.accepted_products],
             "audit_rows": list(self.audit_rows),
             "pending_detail_queue": [dict(item) for item in self.pending_detail_queue],
+            "current_proxy_key": self.current_proxy_key,
             "current_proxy_index": self.current_proxy_index,
             "block_events_on_current_proxy": self.block_events_on_current_proxy,
             "last_block_reason": self.last_block_reason,
@@ -188,3 +195,9 @@ def _normalize_browser_hardening(value: Any) -> str:
     if value in {"off", "minimal"}:
         return value
     return "off"
+
+
+def _normalize_proxy_provider(value: Any) -> str:
+    if value in {"manual", "v2rayn"}:
+        return str(value)
+    return "manual"
