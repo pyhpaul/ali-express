@@ -64,7 +64,7 @@ Behavior in this phase:
 - generates per-node sidecar `xray` configs under `<run_dir>/proxy_runtime`
 - probes each local socks5 endpoint before opening the browser
 - picks one healthy endpoint for the current run
-- restores the saved proxy selection on `resume` before opening the browser
+- attempts to restore the last persisted proxy selection on `resume` when that proxy is still eligible
 - proxy health cooldown is fallback memory, not a periodic rotation scheduler
 - cleans sidecar processes on exit
 
@@ -114,7 +114,8 @@ python -m ali_mvp resume --run-dir data/home-appliance-accessories/20260511_1200
 
 Notes for `resume`:
 
-- `resume` restores the last persisted proxy selection for the run before reopening the browser
+- `resume` attempts to restore the last persisted proxy selection when that proxy is still eligible after health / cooldown filtering
+- if the persisted proxy is no longer eligible, `resume` falls back to another eligible proxy
 - proxy overrides apply when a new browser session is opened for `resume`
 - `resume` does not do live proxy swap inside one browser session after the browser is already open
 
