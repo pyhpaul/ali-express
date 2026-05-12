@@ -264,6 +264,38 @@ def test_run_new_scrape_fails_fast_when_session_cooldown_is_active(tmp_path, mon
     assert state.last_error == "session_cooldown_active"
     assert state.last_block_reason == "session_cooldown_active"
     assert state.last_blocked_url == manifest.url
+    assert state.consecutive_captcha_count == 1
+    assert state.cooldown_until == "2026-05-11T08:30:00Z"
+    assert state.last_session_preflight_status == "captcha_blocked"
+
+
+def test_run_new_scrape_skips_session_preflight_when_manifest_turns_it_off(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+
+    manifest = replace(_manifest(tmp_path, pages=1, enrich_detail=False), session_preflight="off")
+
+    class FakePage:
+        url = manifest.url
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(
+        scrape_runner,
+        "run_session_preflight",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+    monkeypatch.setattr(
+        scrape_runner,
+        "_run_scrape_from_state",
+        lambda **kwargs: scrape_runner.RunResult(exit_code=0, accepted_count=0, blocked=False),
+    )
+
+    result = scrape_runner.run_new_scrape(
+        manifest=manifest,
+        groups=[],
+        run_dir=tmp_path,
+    )
+
+    assert result == scrape_runner.RunResult(exit_code=0, accepted_count=0, blocked=False)
 
 
 def test_run_new_scrape_completed_state_preserves_session_ready_fields(tmp_path, monkeypatch):

@@ -21,6 +21,7 @@ from .proxy_pool import NoHealthyProxyError, ProxyPool
 from .review import build_review_rows
 from .run_state import RunManifest, RunState, RunStateStore
 from .scoring import ProductRecord, aggregate_rank, parse_count, parse_float
+from .session_guard import SessionPreflightResult
 from .session_guard import run_session_preflight
 
 
@@ -46,12 +47,7 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
 
     if _is_session_cooldown_active(cooldown_until=existing_state.cooldown_until, now_iso=manifest.created_at):
         failed_state = replace(
-            _next_session_state(
-                existing=session_seed_state,
-                preflight_status=existing_state.last_session_preflight_status,
-                risk_level=existing_state.session_risk_level,
-                now_iso=manifest.created_at,
-            ),
+            session_seed_state,
             status="failed",
             last_error="session_cooldown_active",
             last_block_reason="session_cooldown_active",
@@ -80,7 +76,7 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
             user_agent=manifest.user_agent,
             accept_language=manifest.accept_language,
         )
-        preflight = run_session_preflight(page, search_url=manifest.url, warm_up=True)
+        preflight = _resolve_session_preflight(manifest=manifest, page=page)
         running_state = _next_session_state(
             existing=session_seed_state,
             preflight_status=preflight.status,
@@ -599,6 +595,18 @@ def _with_session_fields(existing: RunState, updated: RunState) -> RunState:
         last_session_ok_at=existing.last_session_ok_at,
         cooldown_until=existing.cooldown_until,
     )
+
+
+def _resolve_session_preflight(*, manifest: RunManifest, page: object) -> SessionPreflightResult:
+    if manifest.session_preflight != "on":
+        return SessionPreflightResult(
+            status="ready",
+            risk_level="low",
+            page_type="skipped",
+            reasons=[],
+            warmed_up=False,
+        )
+    return run_session_preflight(page, search_url=manifest.url, warm_up=True)
 
 
 def _enrich_listing_survivors(
