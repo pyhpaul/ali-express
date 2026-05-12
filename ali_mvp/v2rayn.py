@@ -46,7 +46,12 @@ def load_v2rayn_source(root: Path) -> V2RayNSource:
 
     nodes: list[V2RayNNode] = []
     for row in rows:
-        proto_extra = json.loads(row["ProtoExtra"] or "{}")
+        try:
+            proto_extra = json.loads(row["ProtoExtra"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(proto_extra, dict):
+            continue
         method = str(proto_extra.get("SsMethod") or "")
         if int(row["ConfigType"] or 0) != 3 or not row["Password"] or not method:
             continue
