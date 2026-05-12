@@ -33,7 +33,7 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
     store.save_manifest(manifest)
     try:
         proxy_pool = ProxyPool.from_manifest(manifest=manifest, run_dir=run_dir)
-    except NoHealthyProxyError as error:
+    except Exception as error:
         failed_state = RunState(status="failed", last_error=str(error))
         store.save_state(failed_state)
         store.save_summary(failed_state)
@@ -123,7 +123,7 @@ def resume_scrape(
 
     try:
         proxy_pool = ProxyPool.from_manifest(manifest=proxy_manifest, run_dir=run_dir)
-    except NoHealthyProxyError as error:
+    except Exception as error:
         failed_state = replace(state, status="failed", last_error=str(error))
         store.save_state(failed_state)
         store.save_summary(failed_state)

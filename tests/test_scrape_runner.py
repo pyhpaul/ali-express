@@ -150,6 +150,37 @@ def test_run_new_scrape_fails_when_v2rayn_provider_has_no_healthy_proxy(tmp_path
     assert state.last_error == "no healthy proxy"
 
 
+def test_run_new_scrape_fails_when_provider_bootstrap_raises_generic_error(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunStateStore
+
+    manifest = RunManifest(
+        source_type="keyword",
+        source_value="pump part",
+        url="https://www.aliexpress.com/wholesale?SearchText=pump+part",
+        max_items=20,
+        pages=None,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        blacklist_file=None,
+        proxy_provider="v2rayn",
+        v2rayn_dir="C:/Users/test/v2rayN",
+    )
+    monkeypatch.setattr(
+        "ali_mvp.scrape_runner.ProxyPool.from_manifest",
+        lambda **kwargs: (_ for _ in ()).throw(FileNotFoundError("missing xray.exe")),
+    )
+
+    result = scrape_runner.run_new_scrape(manifest=manifest, groups=[], run_dir=tmp_path)
+    state = RunStateStore(tmp_path).load_state()
+
+    assert result.exit_code == 5
+    assert state.status == "failed"
+    assert state.last_error == "missing xray.exe"
+
+
 def test_resume_scrape_restores_proxy_key_and_closes_runtime(tmp_path, monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
     from ali_mvp.run_state import RunState, RunStateStore
@@ -282,6 +313,80 @@ def test_resume_scrape_fails_when_v2rayn_provider_has_no_healthy_proxy(tmp_path,
     assert failed_state.last_error == "no healthy proxy"
     assert failed_state.accepted_count == 1
     assert failed_state.accepted_products == [existing_product]
+
+
+def test_resume_scrape_fails_when_provider_bootstrap_raises_generic_error(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunState, RunStateStore
+
+    manifest = RunManifest(
+        source_type="keyword",
+        source_value="pump part",
+        url="https://www.aliexpress.com/wholesale?SearchText=pump+part",
+        max_items=20,
+        pages=None,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        blacklist_file=None,
+        proxy_provider="v2rayn",
+        v2rayn_dir="C:/Users/test/v2rayN",
+    )
+    existing_product = _product_record(
+        product_url="https://www.aliexpress.com/item/2405.html",
+        title="Dress Resume Generic Error",
+        scraped_at="2026-05-11T08:00:00Z",
+    )
+    existing_audit = [
+        {
+            "source_type": manifest.source_type,
+            "source_value": manifest.source_value,
+            "title": existing_product.title,
+            "product_url": existing_product.product_url,
+            "filter_decision": "accepted",
+            "filter_stage": "detail",
+            "reject_groups": "",
+            "reject_terms": "",
+            "reject_fields": "",
+            "warning_groups": "",
+            "warning_terms": "",
+            "warning_fields": "",
+        }
+    ]
+    state = RunState(
+        status="blocked",
+        current_listing_page=1,
+        raw_products_count=1,
+        normalized_count=1,
+        accepted_count=1,
+        seen_product_keys=[existing_product.product_url],
+        accepted_products=[existing_product],
+        audit_rows=existing_audit,
+        pending_detail_queue=[],
+        current_proxy_index=1,
+        current_proxy_key="node-b",
+        block_events_on_current_proxy=1,
+    )
+    store = RunStateStore(tmp_path)
+    store.save_manifest(manifest)
+    store.save_state(state)
+    store.save_summary(state)
+
+    monkeypatch.setattr(
+        "ali_mvp.scrape_runner.ProxyPool.from_manifest",
+        lambda **kwargs: (_ for _ in ()).throw(FileNotFoundError("missing xray.exe")),
+    )
+
+    result = scrape_runner.resume_scrape(tmp_path, details_only=False)
+    failed_state = store.load_state()
+
+    assert result == scrape_runner.RunResult(exit_code=5, accepted_count=1, blocked=False)
+    assert failed_state.status == "failed"
+    assert failed_state.last_error == "missing xray.exe"
+    assert failed_state.accepted_count == 1
+    assert failed_state.accepted_products == [existing_product]
+    assert failed_state.audit_rows == existing_audit
 
 
 def test_resume_scrape_details_only_completed_short_circuits_before_provider(tmp_path, monkeypatch):
