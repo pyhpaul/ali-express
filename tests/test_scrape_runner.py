@@ -4,6 +4,8 @@ import json
 from dataclasses import asdict, replace
 from importlib import import_module
 
+import pytest
+
 from ali_mvp.filtering import FilterGroup
 from ali_mvp.output import read_csv_rows
 from ali_mvp.run_state import RunManifest
@@ -55,6 +57,22 @@ def _product_record(*, product_url: str, title: str, scraped_at: str = "2026-05-
         description_text="Long sleeve dress",
         scraped_at=scraped_at,
         detail_status="detail_enriched",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _default_ready_session_preflight(monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    monkeypatch.setattr(
+        scrape_runner,
+        "run_session_preflight",
+        lambda page, search_url, warm_up: SessionPreflightResult(
+            status="ready",
+            risk_level="low",
+            page_type="search",
+            reasons=[],
+            warmed_up=bool(warm_up),
+        ),
     )
 
 
@@ -146,6 +164,21 @@ def test_run_new_scrape_stops_when_session_preflight_reports_phone_verification(
     )
 
     assert result == scrape_runner.RunResult(exit_code=6, accepted_count=0, blocked=False)
+    state = json.loads((tmp_path / "run_state.json").read_text(encoding="utf-8"))
+    summary = json.loads((tmp_path / "run_summary.json").read_text(encoding="utf-8"))
+
+    assert state["status"] == "failed"
+    assert state["last_error"] == "phone_verification_required"
+    assert state["last_block_reason"] == "phone_verification_required"
+    assert state["last_blocked_url"] == "https://login.aliexpress.com/phone"
+    assert summary["status"] == "failed"
+    assert summary["last_error"] == "phone_verification_required"
+    assert summary["last_block_reason"] == "phone_verification_required"
+    assert summary["last_blocked_url"] == "https://login.aliexpress.com/phone"
+    assert (tmp_path / "products.csv").exists()
+    assert (tmp_path / "products_filter_audit.csv").exists()
+    assert (tmp_path / "products_review.csv").exists()
+    assert (tmp_path / "category_rank.csv").exists()
 
 
 def test_run_new_scrape_fails_when_v2rayn_provider_has_no_healthy_proxy(tmp_path, monkeypatch):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -60,8 +61,7 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
                 last_block_reason=preflight.status,
                 last_blocked_url=str(getattr(page, "url", "") or manifest.url),
             )
-            store.save_state(failed_state)
-            store.save_summary(failed_state)
+            _save_failed_state(store, failed_state)
             _write_outputs(run_dir, failed_state.accepted_products, failed_state.audit_rows)
             return RunResult(exit_code=6, accepted_count=failed_state.accepted_count, blocked=False)
         return _run_scrape_from_state(
@@ -494,6 +494,17 @@ def _run_scrape_from_state(
         exit_code=_completed_exit_code(len(accepted_products)),
         accepted_count=len(accepted_products),
     )
+
+
+def _save_failed_state(store: RunStateStore, state: RunState) -> None:
+    store.save_state(state)
+    store.save_summary(state)
+    if not state.last_error:
+        return
+    summary = store.load_summary()
+    summary["last_error"] = state.last_error
+    with store.summary_path.open("w", encoding="utf-8") as handle:
+        json.dump(summary, handle, ensure_ascii=False, indent=2, sort_keys=True)
 
 
 def _enrich_listing_survivors(

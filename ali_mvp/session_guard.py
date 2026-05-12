@@ -15,7 +15,33 @@ class SessionPreflightResult:
 
 
 def run_session_preflight(page, *, search_url: str, warm_up: bool) -> SessionPreflightResult:
-    payload = _collect_session_signals(page, search_url=search_url)
+    initial_payload = collect_session_signals(page)
+    initial_result = _classify_session_payload(initial_payload)
+    if initial_result.status in {"captcha_blocked", "phone_verification_required", "login_required"}:
+        return initial_result
+
+    if initial_result.status == "search_not_ready" and warm_up:
+        _run_warm_up(page, search_url=search_url)
+        warmed_payload = collect_session_signals(page)
+        warmed_result = _classify_session_payload(warmed_payload)
+        return SessionPreflightResult(
+            status=warmed_result.status,
+            risk_level=warmed_result.risk_level,
+            page_type=warmed_result.page_type,
+            reasons=warmed_result.reasons,
+            warmed_up=True,
+        )
+
+    return SessionPreflightResult(
+        status=initial_result.status,
+        risk_level=initial_result.risk_level,
+        page_type=initial_result.page_type,
+        reasons=initial_result.reasons,
+        warmed_up=False,
+    )
+
+
+def _classify_session_payload(payload: dict[str, object]) -> SessionPreflightResult:
     page_type = str(payload.get("pageType") or "")
     reasons: list[str] = []
     status = "ready"
@@ -38,38 +64,15 @@ def run_session_preflight(page, *, search_url: str, warm_up: bool) -> SessionPre
         risk_level = "medium"
         reasons.append("search_not_ready")
 
-    warmed_up = False
-    if status == "ready" and warm_up:
-        _run_warm_up(page, search_url=search_url)
-        warmed_up = True
-
     return SessionPreflightResult(
         status=status,
         risk_level=risk_level,
         page_type=page_type,
         reasons=reasons,
-        warmed_up=warmed_up,
+        warmed_up=False,
     )
-
-
-def _collect_session_signals(page, *, search_url: str) -> dict[str, object]:
-    if hasattr(page, "run_js"):
-        return collect_session_signals(page)
-
-    current_url = str(getattr(page, "url", "") or search_url)
-    is_search_page = "wholesale" in current_url or "SearchText" in current_url
-    is_verify_page = "login" in current_url or "verify" in current_url or "phone" in current_url
-    return {
-        "pageType": "search" if is_search_page else ("verify" if is_verify_page else "unknown"),
-        "captcha": False,
-        "loginRequired": False,
-        "phoneVerifyRequired": "phone" in current_url,
-        "searchResultsVisible": is_search_page,
-    }
 
 
 def _run_warm_up(page, *, search_url: str) -> None:
     del search_url
-    if not hasattr(page, "run_js"):
-        return
     warm_up_search_session(page)
