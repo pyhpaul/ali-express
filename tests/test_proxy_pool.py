@@ -141,6 +141,36 @@ def test_proxy_pool_from_manifest_manual_filters_cooldown_and_attaches_health_st
     assert pool.health_store is not None
 
 
+def test_proxy_pool_from_manifest_manual_raises_when_all_configured_proxies_are_in_cooldown(tmp_path):
+    run_dir = tmp_path / "run-1"
+    run_dir.mkdir()
+    proxy_file = tmp_path / "proxies.txt"
+    proxy_file.write_text("http://manual-a:8080\nhttp://manual-b:8080\n", encoding="utf-8")
+    (tmp_path / "_proxy_health.json").write_text(
+        '{"http://manual-a:8080":{"success_count":0,"timeout_count":0,"captcha_count":1,"block_count":1,"last_event":"captcha","last_failed_at":"2026-05-12T10:00:00Z","cooldown_until":"2099-01-01T00:00:00Z"},"http://manual-b:8080":{"success_count":0,"timeout_count":1,"captcha_count":0,"block_count":0,"last_event":"timeout","last_failed_at":"2026-05-12T10:05:00Z","cooldown_until":"2099-01-01T00:00:00Z"}}',
+        encoding="utf-8",
+    )
+    manifest = RunManifest(
+        source_type="keyword",
+        source_value="fan motor",
+        url="https://www.aliexpress.com/wholesale?SearchText=fan+motor",
+        max_items=20,
+        pages=None,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        blacklist_file=None,
+        proxy_provider="manual",
+        proxy="",
+        proxy_file=str(proxy_file),
+        max_blocks_per_proxy=3,
+    )
+
+    with pytest.raises(NoHealthyProxyError, match="No healthy manual proxies"):
+        ProxyPool.from_manifest(manifest=manifest, run_dir=run_dir)
+
+
 def test_proxy_pool_from_manifest_closes_runtime_before_no_healthy_proxy_error(monkeypatch, tmp_path):
     runtime = SidecarRuntime(
         runtime_dir=tmp_path / "runtime",
@@ -281,3 +311,52 @@ def test_record_proxy_health_ignores_non_proxy_errors(tmp_path, monkeypatch):
     )
 
     assert not health_file.exists()
+
+
+def test_record_proxy_health_ignores_failed_state_without_proxy_error(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    health_file = tmp_path / "_proxy_health.json"
+    pool = ProxyPool(
+        proxies=["socks5://127.0.0.1:11080"],
+        proxy_keys=["node-a"],
+        proxy_labels=["A"],
+        max_blocks_per_proxy=2,
+    )
+    pool.health_store = ProxyHealthStore(health_file)
+    pool.health_records = {}
+    monkeypatch.setattr(scrape_runner, "_utc_now_iso", lambda: "2026-05-12T12:34:56Z")
+
+    scrape_runner._record_proxy_health(
+        proxy_pool=pool,
+        state=RunState(status="failed", last_block_reason="listing_page_unreachable"),
+        blocked=False,
+    )
+
+    assert not health_file.exists()
+
+
+def test_record_proxy_health_treats_completed_state_as_success_even_with_stale_last_error(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    health_file = tmp_path / "_proxy_health.json"
+    pool = ProxyPool(
+        proxies=["socks5://127.0.0.1:11080"],
+        proxy_keys=["node-a"],
+        proxy_labels=["A"],
+        max_blocks_per_proxy=2,
+    )
+    pool.health_store = ProxyHealthStore(health_file)
+    pool.health_records = {}
+    monkeypatch.setattr(scrape_runner, "_utc_now_iso", lambda: "2026-05-12T12:34:56Z")
+
+    scrape_runner._record_proxy_health(
+        proxy_pool=pool,
+        state=RunState(status="completed", last_error="proxy disconnected"),
+        blocked=False,
+    )
+
+    record = pool.health_store.load()["node-a"]
+
+    assert record.last_event == "success"
+    assert record.success_count == 1
+    assert record.timeout_count == 0
+    assert record.cooldown_until == ""

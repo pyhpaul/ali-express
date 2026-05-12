@@ -42,6 +42,8 @@ class ProxyPool:
             eligible_indices = pool._eligible_indices(now_iso=_utc_now())
             pool.proxies = [pool.proxies[index] for index in eligible_indices]
             pool.proxy_keys = [pool.proxy_keys[index] for index in eligible_indices]
+            if (manifest.proxy.strip() or manifest.proxy_file) and not pool.proxies:
+                raise NoHealthyProxyError("No healthy manual proxies available after cooldown filtering")
             return pool
 
         source = load_v2rayn_source(Path(manifest.v2rayn_dir))

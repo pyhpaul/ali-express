@@ -755,8 +755,10 @@ def _utc_now_iso() -> str:
 def _proxy_health_event_for_state(*, state: RunState, blocked: bool, blocked_proxy_key: str) -> str:
     if blocked and blocked_proxy_key:
         return "captcha"
-    if not state.last_error:
+    if state.status == "completed":
         return "success"
+    if not state.last_error:
+        return ""
 
     last_error = state.last_error.lower()
     timeout_markers = (
