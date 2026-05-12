@@ -339,3 +339,18 @@ def test_run_state_summary_includes_full_identity_warning_structure(tmp_path):
         "configured": {"accept_language_primary": "en-US"},
         "effective": {"navigator_language": "fr-FR"},
     }
+
+
+def test_run_state_from_dict_ignores_malformed_identity_warning_payload():
+    state = RunState.from_dict(
+        {
+            "status": "failed",
+            "identity_warning": {
+                "code": "accept_language_mismatch",
+                "configured": ["bad-configured-shape"],
+                "effective": "bad-effective-shape",
+            },
+        }
+    )
+
+    assert state.identity_warning == {}

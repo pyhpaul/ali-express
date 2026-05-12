@@ -239,6 +239,11 @@ def test_run_new_scrape_fails_fast_when_session_cooldown_is_active(tmp_path, mon
             last_session_preflight_status="captcha_blocked",
             consecutive_captcha_count=1,
             cooldown_until="2026-05-11T08:30:00Z",
+            identity_warning={
+                "code": "user_agent_major_mismatch",
+                "configured": {"user_agent_major": 124},
+                "effective": {"user_agent_major": 126},
+            },
         )
     )
 
@@ -267,6 +272,7 @@ def test_run_new_scrape_fails_fast_when_session_cooldown_is_active(tmp_path, mon
     assert state.consecutive_captcha_count == 1
     assert state.cooldown_until == "2026-05-11T08:30:00Z"
     assert state.last_session_preflight_status == "captcha_blocked"
+    assert state.identity_warning == {}
 
 
 def test_run_new_scrape_skips_session_preflight_when_manifest_turns_it_off(tmp_path, monkeypatch):
@@ -554,6 +560,11 @@ def test_run_new_scrape_fails_when_provider_bootstrap_raises_generic_error(tmp_p
             last_session_preflight_status="captcha_blocked",
             consecutive_captcha_count=2,
             cooldown_until="2026-05-11T10:00:00Z",
+            identity_warning={
+                "code": "user_agent_major_mismatch",
+                "configured": {"user_agent_major": 124},
+                "effective": {"user_agent_major": 126},
+            },
         )
     )
     monkeypatch.setattr(
@@ -570,6 +581,48 @@ def test_run_new_scrape_fails_when_provider_bootstrap_raises_generic_error(tmp_p
     assert state.last_session_preflight_status == "captcha_blocked"
     assert state.consecutive_captcha_count == 2
     assert state.cooldown_until == "2026-05-11T10:00:00Z"
+    assert state.identity_warning == {}
+
+
+def test_run_new_scrape_persists_failed_state_when_browser_open_fails_and_clears_warning(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunState, RunStateStore
+
+    manifest = _manifest(tmp_path, pages=1, enrich_detail=False)
+    store = RunStateStore(tmp_path)
+    store.save_state(
+        RunState(
+            status="failed",
+            identity_warning={
+                "code": "user_agent_major_mismatch",
+                "configured": {"user_agent_major": 124},
+                "effective": {"user_agent_major": 126},
+            },
+        )
+    )
+
+    monkeypatch.setattr(
+        scrape_runner,
+        "open_listing_page",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("browser failed to start")),
+    )
+
+    result = scrape_runner.run_new_scrape(
+        manifest=manifest,
+        groups=[],
+        run_dir=tmp_path,
+    )
+
+    state = store.load_state()
+    summary = store.load_summary()
+
+    assert result == scrape_runner.RunResult(exit_code=5, accepted_count=0, blocked=False)
+    assert state.status == "failed"
+    assert state.last_error == "browser failed to start"
+    assert state.identity_warning == {}
+    assert summary["status"] == "failed"
+    assert summary["last_error"] == "browser failed to start"
+    assert "identity_warning" not in summary
 
 
 def test_resume_scrape_restores_proxy_key_and_closes_runtime(tmp_path, monkeypatch):

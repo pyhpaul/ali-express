@@ -39,6 +39,22 @@ def test_validate_browser_identity_returns_accept_language_mismatch_warning():
     )
 
 
+def test_validate_browser_identity_falls_back_to_effective_languages_when_language_is_empty():
+    warning = validate_browser_identity(
+        configured_user_agent="",
+        configured_accept_language="en-US,en;q=0.9",
+        effective_user_agent="",
+        effective_language="",
+        effective_languages=["fr-FR", "fr"],
+    )
+
+    assert warning == BrowserIdentityWarning(
+        code="accept_language_mismatch",
+        configured={"accept_language_primary": "en-US"},
+        effective={"navigator_language": "fr-FR"},
+    )
+
+
 def test_validate_browser_identity_returns_none_when_identity_is_consistent():
     warning = validate_browser_identity(
         configured_user_agent=(

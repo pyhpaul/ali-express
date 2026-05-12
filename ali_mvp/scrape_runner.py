@@ -46,7 +46,6 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
         consecutive_captcha_count=existing_state.consecutive_captcha_count,
         last_session_ok_at=existing_state.last_session_ok_at,
         cooldown_until=existing_state.cooldown_until,
-        identity_warning=dict(existing_state.identity_warning),
     )
 
     if _is_session_cooldown_active(cooldown_until=existing_state.cooldown_until, now_iso=manifest.created_at):
@@ -64,22 +63,27 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
     try:
         proxy_pool = ProxyPool.from_manifest(manifest=manifest, run_dir=run_dir)
     except Exception as error:
-        failed_state = replace(session_seed_state, status="failed", last_error=str(error))
-        store.save_state(failed_state)
-        store.save_summary(failed_state)
+        failed_state = replace(session_seed_state, status="failed", last_error=str(error), identity_warning={})
+        _save_failed_state(store, failed_state)
         _write_outputs(run_dir, [], [])
         return RunResult(exit_code=5, accepted_count=0)
 
     try:
-        page = open_listing_page(
-            manifest.url,
-            user_data_dir=manifest.user_data_dir,
-            port=manifest.port,
-            browser_hardening=manifest.browser_hardening,
-            proxy=proxy_pool.current(),
-            user_agent=manifest.user_agent,
-            accept_language=manifest.accept_language,
-        )
+        try:
+            page = open_listing_page(
+                manifest.url,
+                user_data_dir=manifest.user_data_dir,
+                port=manifest.port,
+                browser_hardening=manifest.browser_hardening,
+                proxy=proxy_pool.current(),
+                user_agent=manifest.user_agent,
+                accept_language=manifest.accept_language,
+            )
+        except Exception as error:
+            failed_state = replace(session_seed_state, status="failed", last_error=str(error), identity_warning={})
+            _save_failed_state(store, failed_state)
+            _write_outputs(run_dir, failed_state.accepted_products, failed_state.audit_rows)
+            return RunResult(exit_code=5, accepted_count=0, blocked=False)
         identity_warning = _collect_identity_warning(manifest=manifest, page=page)
         session_seed_state = _with_identity_warning(session_seed_state, identity_warning)
         preflight = _resolve_session_preflight(manifest=manifest, page=page)
@@ -186,9 +190,8 @@ def resume_scrape(
     try:
         proxy_pool = ProxyPool.from_manifest(manifest=proxy_manifest, run_dir=run_dir)
     except Exception as error:
-        failed_state = replace(state, status="failed", last_error=str(error))
-        store.save_state(failed_state)
-        store.save_summary(failed_state)
+        failed_state = replace(state, status="failed", last_error=str(error), identity_warning={})
+        _save_failed_state(store, failed_state)
         _write_outputs(run_dir, failed_state.accepted_products, failed_state.audit_rows)
         return RunResult(exit_code=5, accepted_count=failed_state.accepted_count, blocked=False)
 
@@ -199,15 +202,21 @@ def resume_scrape(
     )
 
     try:
-        page = open_listing_page(
-            manifest.url,
-            user_data_dir=manifest.user_data_dir,
-            port=manifest.port,
-            browser_hardening=manifest.browser_hardening,
-            proxy=proxy_pool.current(),
-            user_agent=effective_user_agent,
-            accept_language=effective_accept_language,
-        )
+        try:
+            page = open_listing_page(
+                manifest.url,
+                user_data_dir=manifest.user_data_dir,
+                port=manifest.port,
+                browser_hardening=manifest.browser_hardening,
+                proxy=proxy_pool.current(),
+                user_agent=effective_user_agent,
+                accept_language=effective_accept_language,
+            )
+        except Exception as error:
+            failed_state = replace(state, status="failed", last_error=str(error), identity_warning={})
+            _save_failed_state(store, failed_state)
+            _write_outputs(run_dir, failed_state.accepted_products, failed_state.audit_rows)
+            return RunResult(exit_code=5, accepted_count=failed_state.accepted_count, blocked=False)
         identity_warning = _collect_identity_warning(manifest=proxy_manifest, page=page)
 
         resumed_state = _with_identity_warning(state, identity_warning)

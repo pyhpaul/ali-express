@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections.abc import Sequence
 import re
 from typing import Any
 
@@ -30,7 +31,7 @@ def validate_browser_identity(
         )
 
     configured_primary = _accept_language_primary(configured_accept_language)
-    effective_primary = str(effective_language or "").strip()
+    effective_primary = _effective_primary_language(effective_language, effective_languages)
     if configured_primary and effective_primary and configured_primary.lower() != effective_primary.lower():
         return BrowserIdentityWarning(
             code="accept_language_mismatch",
@@ -53,3 +54,16 @@ def _accept_language_primary(value: str) -> str:
     if ";" in primary:
         primary = primary.split(";", 1)[0].strip()
     return primary
+
+
+def _effective_primary_language(language: str, languages: list[str] | None) -> str:
+    primary = str(language or "").strip()
+    if primary:
+        return primary
+    if not isinstance(languages, Sequence) or isinstance(languages, (str, bytes)):
+        return ""
+    for item in languages:
+        candidate = str(item or "").strip()
+        if candidate:
+            return candidate
+    return ""

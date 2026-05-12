@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from collections.abc import Mapping
 
 from .scoring import ProductRecord
 
@@ -220,10 +221,14 @@ def _deserialize_identity_warning(payload: dict[str, Any]) -> dict[str, Any]:
         code = str(warning.get("code") or "")
         if not code:
             return {}
+        configured = warning.get("configured")
+        effective = warning.get("effective")
+        if not isinstance(configured, Mapping) or not isinstance(effective, Mapping):
+            return {}
         return {
             "code": code,
-            "configured": dict(warning.get("configured") or {}),
-            "effective": dict(warning.get("effective") or {}),
+            "configured": dict(configured),
+            "effective": dict(effective),
         }
     legacy_code = str(payload.get("identity_warning_code") or "")
     if not legacy_code:
