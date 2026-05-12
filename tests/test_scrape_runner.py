@@ -183,9 +183,22 @@ def test_run_new_scrape_stops_when_session_preflight_reports_phone_verification(
 
 def test_run_new_scrape_updates_captcha_cooldown_after_preflight_block(tmp_path, monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunState, RunStateStore
 
     class FakePage:
         url = "https://www.aliexpress.com/verify"
+
+    store = RunStateStore(tmp_path)
+    store.save_state(
+        RunState(
+            status="failed",
+            session_risk_level="high",
+            last_session_preflight_status="captcha_blocked",
+            consecutive_captcha_count=1,
+            last_session_ok_at="2026-05-11T07:00:00Z",
+            cooldown_until="2026-05-11T07:30:00Z",
+        )
+    )
 
     monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
     monkeypatch.setattr(
@@ -209,8 +222,122 @@ def test_run_new_scrape_updates_captcha_cooldown_after_preflight_block(tmp_path,
     state = scrape_runner.RunStateStore(tmp_path).load_state()
     assert state.session_risk_level == "high"
     assert state.last_session_preflight_status == "captcha_blocked"
-    assert state.consecutive_captcha_count == 1
-    assert state.cooldown_until != ""
+    assert state.consecutive_captcha_count == 2
+    assert state.cooldown_until == "2026-05-11T10:00:00Z"
+
+
+def test_run_new_scrape_fails_fast_when_session_cooldown_is_active(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunState, RunStateStore
+
+    manifest = _manifest(tmp_path, pages=1, enrich_detail=False)
+    store = RunStateStore(tmp_path)
+    store.save_state(
+        RunState(
+            status="failed",
+            session_risk_level="high",
+            last_session_preflight_status="captcha_blocked",
+            consecutive_captcha_count=1,
+            cooldown_until="2026-05-11T08:30:00Z",
+        )
+    )
+
+    opened = {"value": False}
+
+    def fake_open_listing_page(*args, **kwargs):
+        opened["value"] = True
+        return object()
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", fake_open_listing_page)
+
+    result = scrape_runner.run_new_scrape(
+        manifest=manifest,
+        groups=[],
+        run_dir=tmp_path,
+    )
+
+    state = store.load_state()
+
+    assert result == scrape_runner.RunResult(exit_code=6, accepted_count=0, blocked=False)
+    assert opened["value"] is False
+    assert state.status == "failed"
+    assert state.last_error == "session_cooldown_active"
+    assert state.last_block_reason == "session_cooldown_active"
+    assert state.last_blocked_url == manifest.url
+
+
+def test_run_new_scrape_completed_state_preserves_session_ready_fields(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunStateStore
+
+    manifest = _manifest(tmp_path, pages=1, enrich_detail=False)
+
+    class FakePage:
+        url = manifest.url
+
+    raw_product = {
+        "title": "Dress Session",
+        "url": "https://www.aliexpress.com/item/1012.html",
+        "resolvedProductUrl": "https://www.aliexpress.com/item/1012.html",
+    }
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(scrape_runner, "collect_listing_page_products", lambda page: [dict(raw_product)])
+    monkeypatch.setattr(scrape_runner, "dedupe_listing_products", lambda products, seen_keys: products)
+    monkeypatch.setattr(
+        scrape_runner,
+        "prefilter_listing_products",
+        lambda raw_products, groups, source_type, source_value: (raw_products, []),
+    )
+    monkeypatch.setattr(
+        scrape_runner,
+        "normalize_products",
+        lambda products, *, source_type, source_value, scraped_at: [
+            _product_record(
+                product_url=str(product["resolvedProductUrl"]),
+                title=str(product["title"]),
+                scraped_at=scraped_at,
+            )
+            for product in products
+        ],
+    )
+    monkeypatch.setattr(
+        scrape_runner,
+        "filter_products",
+        lambda products, groups: (
+            list(products),
+            [
+                {
+                    "source_type": product.source_type,
+                    "source_value": product.source_value,
+                    "title": product.title,
+                    "product_url": product.product_url,
+                    "filter_decision": "accepted",
+                    "filter_stage": "accepted",
+                    "reject_groups": "",
+                    "reject_terms": "",
+                    "reject_fields": "",
+                    "warning_groups": "",
+                    "warning_terms": "",
+                    "warning_fields": "",
+                }
+                for product in products
+            ],
+        ),
+    )
+
+    result = scrape_runner.run_new_scrape(
+        manifest=manifest,
+        groups=[],
+        run_dir=tmp_path,
+    )
+
+    state = RunStateStore(tmp_path).load_state()
+
+    assert result == scrape_runner.RunResult(exit_code=0, accepted_count=1, blocked=False)
+    assert state.status == "completed"
+    assert state.last_session_preflight_status == "ready"
+    assert state.last_session_ok_at == manifest.created_at
 
 
 def test_run_new_scrape_fails_when_v2rayn_provider_has_no_healthy_proxy(tmp_path, monkeypatch):

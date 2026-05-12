@@ -34,6 +34,33 @@ class RunResult:
 def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir: Path) -> RunResult:
     store = RunStateStore(run_dir)
     store.save_manifest(manifest)
+    existing_state = store.load_state()
+    session_seed_state = RunState(
+        status="running",
+        session_risk_level=existing_state.session_risk_level,
+        last_session_preflight_status=existing_state.last_session_preflight_status,
+        consecutive_captcha_count=existing_state.consecutive_captcha_count,
+        last_session_ok_at=existing_state.last_session_ok_at,
+        cooldown_until=existing_state.cooldown_until,
+    )
+
+    if _is_session_cooldown_active(cooldown_until=existing_state.cooldown_until, now_iso=manifest.created_at):
+        failed_state = replace(
+            _next_session_state(
+                existing=session_seed_state,
+                preflight_status=existing_state.last_session_preflight_status,
+                risk_level=existing_state.session_risk_level,
+                now_iso=manifest.created_at,
+            ),
+            status="failed",
+            last_error="session_cooldown_active",
+            last_block_reason="session_cooldown_active",
+            last_blocked_url=manifest.url,
+        )
+        _save_failed_state(store, failed_state)
+        _write_outputs(run_dir, failed_state.accepted_products, failed_state.audit_rows)
+        return RunResult(exit_code=6, accepted_count=0, blocked=False)
+
     try:
         proxy_pool = ProxyPool.from_manifest(manifest=manifest, run_dir=run_dir)
     except Exception as error:
@@ -55,7 +82,7 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
         )
         preflight = run_session_preflight(page, search_url=manifest.url, warm_up=True)
         running_state = _next_session_state(
-            existing=RunState(status="running"),
+            existing=session_seed_state,
             preflight_status=preflight.status,
             risk_level=preflight.risk_level,
             now_iso=manifest.created_at,
@@ -71,6 +98,8 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
             _save_failed_state(store, failed_state)
             _write_outputs(run_dir, failed_state.accepted_products, failed_state.audit_rows)
             return RunResult(exit_code=6, accepted_count=failed_state.accepted_count, blocked=False)
+        store.save_state(running_state)
+        store.save_summary(running_state)
         return _run_scrape_from_state(
             manifest=manifest,
             groups=groups,
@@ -258,7 +287,7 @@ def _resume_pending_details(
             blocked_queue = [raw_product]
             blocked_queue.extend(dict(item) for item in pending_queue[index + 1 :])
             blocked_state = replace(
-                state,
+                _with_session_fields(state, state),
                 status="blocked",
                 normalized_count=normalized_count + normalized_delta,
                 accepted_count=len(accepted_products),
@@ -280,7 +309,7 @@ def _resume_pending_details(
     )
     updated_review_context_rows = _merge_review_context_rows(updated_review_context_rows, normalized_rows)
     resumed_state = replace(
-        state,
+        _with_session_fields(state, state),
         status="running",
         normalized_count=normalized_count + normalized_delta,
         accepted_products=accepted_products,
@@ -363,7 +392,7 @@ def _run_scrape_from_state(
 
     if current_page > 1 and not _move_to_listing_page(page, current_page):
         failed_state = replace(
-            state,
+            _with_session_fields(state, state),
             status="failed",
             last_block_reason="listing_page_unreachable",
             last_blocked_url=str(getattr(page, "url", "") or manifest.url),
@@ -428,7 +457,9 @@ def _run_scrape_from_state(
             normalized=normalized,
         )
 
-        checkpoint_state = RunState(
+        checkpoint_state = _with_session_fields(
+            state,
+            RunState(
             status="blocked" if blocked else "running",
             current_listing_page=current_page,
             raw_products_count=raw_products_count,
@@ -443,6 +474,7 @@ def _run_scrape_from_state(
             block_events_on_current_proxy=proxy_pool.block_events_on_current,
             last_block_reason=last_block_reason,
             last_blocked_url=last_blocked_url,
+            ),
         )
         if blocked:
             proxy_pool.mark_blocked()
@@ -473,7 +505,9 @@ def _run_scrape_from_state(
             break
         current_page = next_page
 
-    final_state = RunState(
+    final_state = _with_session_fields(
+        state,
+        RunState(
         status="completed",
         current_listing_page=current_page,
         raw_products_count=raw_products_count,
@@ -488,6 +522,7 @@ def _run_scrape_from_state(
         block_events_on_current_proxy=proxy_pool.block_events_on_current,
         last_block_reason="",
         last_blocked_url="",
+        ),
     )
     store.save_state(final_state)
     store.save_summary(final_state)
@@ -543,6 +578,27 @@ def _add_minutes(now_iso: str, minutes: int) -> str:
     normalized = now_iso.replace("Z", "+00:00")
     scheduled = datetime.fromisoformat(normalized) + timedelta(minutes=minutes)
     return scheduled.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _is_session_cooldown_active(*, cooldown_until: str, now_iso: str) -> bool:
+    if not cooldown_until or not now_iso:
+        return False
+    return _parse_iso_utc(cooldown_until) > _parse_iso_utc(now_iso)
+
+
+def _parse_iso_utc(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _with_session_fields(existing: RunState, updated: RunState) -> RunState:
+    return replace(
+        updated,
+        session_risk_level=existing.session_risk_level,
+        last_session_preflight_status=existing.last_session_preflight_status,
+        consecutive_captcha_count=existing.consecutive_captcha_count,
+        last_session_ok_at=existing.last_session_ok_at,
+        cooldown_until=existing.cooldown_until,
+    )
 
 
 def _enrich_listing_survivors(
