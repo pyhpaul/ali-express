@@ -181,6 +181,42 @@ def test_load_manifest_defaults_browser_hardening_to_off(tmp_path):
     assert store.load_manifest().browser_hardening == "off"
 
 
+def test_load_manifest_normalizes_missing_or_invalid_proxy_provider_to_manual(tmp_path):
+    store = RunStateStore(tmp_path)
+    payload = {
+        "source_type": "keyword",
+        "source_value": "women dress",
+        "url": "",
+        "max_items": 20,
+        "pages": None,
+        "output_dir": "data/women-dress/20260511_160000",
+        "user_data_dir": ".browser-profile",
+        "port": 9333,
+        "enrich_detail": True,
+        "blacklist_file": None,
+        "reject_keyword": [],
+        "browser_hardening": "minimal",
+        "proxy_provider": "invalid-provider",
+        "v2rayn_dir": "C:/Users/test/v2rayN",
+        "proxy": "",
+        "proxy_file": "",
+        "max_blocks_per_proxy": 2,
+        "user_agent": "ua",
+        "accept_language": "en-US,en;q=0.9",
+        "created_at": "2026-05-11T08:00:00Z",
+    }
+    store.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = store.load_manifest()
+
+    assert manifest.proxy_provider == "manual"
+
+    payload.pop("proxy_provider")
+    store.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert store.load_manifest().proxy_provider == "manual"
+
+
 def test_load_state_upgrades_legacy_pending_detail_queue_urls_to_dicts(tmp_path):
     store = RunStateStore(tmp_path)
     payload = {

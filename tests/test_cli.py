@@ -128,6 +128,109 @@ def test_scrape_parser_accepts_v2rayn_provider():
     assert args.v2rayn_dir == "C:/Users/test/v2rayN"
 
 
+def test_run_scrape_defaults_missing_proxy_provider_fields_for_legacy_namespace(monkeypatch, tmp_path):
+    from ali_mvp import cli
+
+    fixed_now = datetime.fromisoformat("2026-05-11T08:00:00+00:00")
+    args = argparse.Namespace(
+        keyword="home appliance accessories",
+        url=None,
+        category_url=None,
+        max_items=1,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        pages=1,
+        blacklist_file=None,
+        reject_keyword=[],
+        browser_hardening="minimal",
+        proxy="",
+        proxy_file="",
+        max_blocks_per_proxy=2,
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
+    )
+
+    class FakeDateTime:
+        @classmethod
+        def now(cls):
+            return fixed_now
+
+    seen: dict[str, object] = {}
+
+    def fake_run_new_scrape(*, manifest, groups, run_dir):
+        seen["manifest"] = manifest
+        run_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("products.csv", "products_filter_audit.csv", "products_review.csv", "category_rank.csv"):
+            (run_dir / name).write_text("", encoding="utf-8")
+        return cli.scrape_runner.RunResult(exit_code=0, accepted_count=1, blocked=False)
+
+    monkeypatch.setattr(cli, "datetime", FakeDateTime)
+    monkeypatch.setattr(cli, "load_filter_groups", lambda path, keywords: [])
+    monkeypatch.setattr(cli.scrape_runner, "run_new_scrape", fake_run_new_scrape)
+
+    code = cli.run_scrape(args)
+
+    assert code == 0
+    assert seen["manifest"].proxy_provider == "manual"
+    assert seen["manifest"].v2rayn_dir == ""
+
+
+def test_run_scrape_rejects_v2rayn_provider_without_v2rayn_dir():
+    args = argparse.Namespace(
+        keyword="home appliance accessories",
+        url=None,
+        category_url=None,
+        max_items=1,
+        output_dir="data",
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        pages=1,
+        blacklist_file=None,
+        reject_keyword=[],
+        browser_hardening="minimal",
+        proxy_provider="v2rayn",
+        v2rayn_dir="",
+        proxy="",
+        proxy_file="",
+        max_blocks_per_proxy=2,
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
+    )
+
+    with pytest.raises(SystemExit, match="--v2rayn-dir is required when --proxy-provider v2rayn"):
+        run_scrape(args)
+
+
+def test_run_scrape_rejects_manual_proxy_flags_with_non_manual_provider():
+    args = argparse.Namespace(
+        keyword="home appliance accessories",
+        url=None,
+        category_url=None,
+        max_items=1,
+        output_dir="data",
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        pages=1,
+        blacklist_file=None,
+        reject_keyword=[],
+        browser_hardening="minimal",
+        proxy_provider="v2rayn",
+        v2rayn_dir="C:/Users/test/v2rayN",
+        proxy="http://127.0.0.1:8080",
+        proxy_file="",
+        max_blocks_per_proxy=2,
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
+    )
+
+    with pytest.raises(SystemExit, match="--proxy and --proxy-file are only supported with --proxy-provider manual"):
+        run_scrape(args)
+
+
 def test_scrape_parser_rejects_invalid_browser_hardening_value():
     parser = build_parser()
 
