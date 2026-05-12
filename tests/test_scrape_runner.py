@@ -406,7 +406,7 @@ def test_run_new_scrape_fails_when_v2rayn_provider_has_no_healthy_proxy(tmp_path
 
 def test_run_new_scrape_fails_when_provider_bootstrap_raises_generic_error(tmp_path, monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
-    from ali_mvp.run_state import RunStateStore
+    from ali_mvp.run_state import RunState, RunStateStore
 
     manifest = RunManifest(
         source_type="keyword",
@@ -422,17 +422,30 @@ def test_run_new_scrape_fails_when_provider_bootstrap_raises_generic_error(tmp_p
         proxy_provider="v2rayn",
         v2rayn_dir="C:/Users/test/v2rayN",
     )
+    store = RunStateStore(tmp_path)
+    store.save_state(
+        RunState(
+            status="failed",
+            session_risk_level="high",
+            last_session_preflight_status="captcha_blocked",
+            consecutive_captcha_count=2,
+            cooldown_until="2026-05-11T10:00:00Z",
+        )
+    )
     monkeypatch.setattr(
         "ali_mvp.scrape_runner.ProxyPool.from_manifest",
         lambda **kwargs: (_ for _ in ()).throw(FileNotFoundError("missing xray.exe")),
     )
 
     result = scrape_runner.run_new_scrape(manifest=manifest, groups=[], run_dir=tmp_path)
-    state = RunStateStore(tmp_path).load_state()
+    state = store.load_state()
 
     assert result.exit_code == 5
     assert state.status == "failed"
     assert state.last_error == "missing xray.exe"
+    assert state.last_session_preflight_status == "captcha_blocked"
+    assert state.consecutive_captcha_count == 2
+    assert state.cooldown_until == "2026-05-11T10:00:00Z"
 
 
 def test_resume_scrape_restores_proxy_key_and_closes_runtime(tmp_path, monkeypatch):

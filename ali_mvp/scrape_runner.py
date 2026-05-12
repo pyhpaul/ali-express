@@ -60,7 +60,7 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
     try:
         proxy_pool = ProxyPool.from_manifest(manifest=manifest, run_dir=run_dir)
     except Exception as error:
-        failed_state = RunState(status="failed", last_error=str(error))
+        failed_state = replace(session_seed_state, status="failed", last_error=str(error))
         store.save_state(failed_state)
         store.save_summary(failed_state)
         _write_outputs(run_dir, [], [])
@@ -579,11 +579,18 @@ def _add_minutes(now_iso: str, minutes: int) -> str:
 def _is_session_cooldown_active(*, cooldown_until: str, now_iso: str) -> bool:
     if not cooldown_until or not now_iso:
         return False
-    return _parse_iso_utc(cooldown_until) > _parse_iso_utc(now_iso)
+    cooldown_at = _parse_iso_utc(cooldown_until)
+    now_at = _parse_iso_utc(now_iso)
+    if cooldown_at is None or now_at is None:
+        return False
+    return cooldown_at > now_at
 
 
-def _parse_iso_utc(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+def _parse_iso_utc(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
 
 
 def _with_session_fields(existing: RunState, updated: RunState) -> RunState:

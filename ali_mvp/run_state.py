@@ -54,7 +54,7 @@ class RunManifest:
             max_blocks_per_proxy=payload.get("max_blocks_per_proxy", 0),
             user_agent=payload.get("user_agent", ""),
             accept_language=payload.get("accept_language", ""),
-            session_preflight=payload.get("session_preflight", "on"),
+            session_preflight=_normalize_session_preflight(payload.get("session_preflight", "on")),
             created_at=payload.get("created_at", ""),
         )
 
@@ -218,3 +218,9 @@ def _normalize_proxy_provider(value: Any) -> str:
     if value in {"manual", "v2rayn"}:
         return str(value)
     return "manual"
+
+
+def _normalize_session_preflight(value: Any) -> str:
+    if value in {"on", "off"}:
+        return str(value)
+    return "on"
