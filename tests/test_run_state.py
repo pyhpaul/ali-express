@@ -265,3 +265,22 @@ def test_run_state_to_summary_marks_failed_runs_resume_recommended(tmp_path):
         "last_blocked_url": "https://www.aliexpress.com/item/11.html",
         "resume_recommended": True,
     }
+
+
+def test_run_state_round_trips_session_risk_fields():
+    state = RunState(
+        status="blocked",
+        session_risk_level="high",
+        last_session_preflight_status="captcha_blocked",
+        consecutive_captcha_count=2,
+        last_session_ok_at="2026-05-12T10:00:00Z",
+        cooldown_until="2026-05-12T10:30:00Z",
+    )
+
+    payload = state.to_dict()
+    restored = RunState.from_dict(payload)
+
+    assert restored.session_risk_level == "high"
+    assert restored.last_session_preflight_status == "captcha_blocked"
+    assert restored.consecutive_captcha_count == 2
+    assert restored.cooldown_until == "2026-05-12T10:30:00Z"

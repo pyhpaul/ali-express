@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -53,9 +54,15 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
             accept_language=manifest.accept_language,
         )
         preflight = run_session_preflight(page, search_url=manifest.url, warm_up=True)
+        running_state = _next_session_state(
+            existing=RunState(status="running"),
+            preflight_status=preflight.status,
+            risk_level=preflight.risk_level,
+            now_iso=manifest.created_at,
+        )
         if preflight.status != "ready":
             failed_state = replace(
-                RunState(status="running"),
+                running_state,
                 status="failed",
                 last_error=preflight.status,
                 last_block_reason=preflight.status,
@@ -71,7 +78,7 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
             store=store,
             proxy_pool=proxy_pool,
             page=page,
-            state=RunState(status="running"),
+            state=running_state,
             start_page=1,
         )
     finally:
@@ -505,6 +512,37 @@ def _save_failed_state(store: RunStateStore, state: RunState) -> None:
     summary["last_error"] = state.last_error
     with store.summary_path.open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def _next_session_state(*, existing: RunState, preflight_status: str, risk_level: str, now_iso: str) -> RunState:
+    consecutive_captcha_count = existing.consecutive_captcha_count
+    cooldown_until = existing.cooldown_until
+    last_session_ok_at = existing.last_session_ok_at
+
+    if preflight_status == "ready":
+        consecutive_captcha_count = 0
+        cooldown_until = ""
+        last_session_ok_at = now_iso
+    elif preflight_status == "captcha_blocked":
+        consecutive_captcha_count += 1
+        cooldown_until = _add_minutes(now_iso, 30 if consecutive_captcha_count == 1 else 120)
+
+    return replace(
+        existing,
+        session_risk_level=risk_level,
+        last_session_preflight_status=preflight_status,
+        consecutive_captcha_count=consecutive_captcha_count,
+        last_session_ok_at=last_session_ok_at,
+        cooldown_until=cooldown_until,
+    )
+
+
+def _add_minutes(now_iso: str, minutes: int) -> str:
+    if not now_iso:
+        return ""
+    normalized = now_iso.replace("Z", "+00:00")
+    scheduled = datetime.fromisoformat(normalized) + timedelta(minutes=minutes)
+    return scheduled.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _enrich_listing_survivors(

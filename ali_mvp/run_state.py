@@ -29,6 +29,7 @@ class RunManifest:
     max_blocks_per_proxy: int = 0
     user_agent: str = ""
     accept_language: str = ""
+    session_preflight: str = "on"
     created_at: str = ""
 
     @classmethod
@@ -53,6 +54,7 @@ class RunManifest:
             max_blocks_per_proxy=payload.get("max_blocks_per_proxy", 0),
             user_agent=payload.get("user_agent", ""),
             accept_language=payload.get("accept_language", ""),
+            session_preflight=payload.get("session_preflight", "on"),
             created_at=payload.get("created_at", ""),
         )
 
@@ -76,6 +78,11 @@ class RunState:
     block_events_on_current_proxy: int = 0
     last_block_reason: str = ""
     last_blocked_url: str = ""
+    session_risk_level: str = "low"
+    last_session_preflight_status: str = ""
+    consecutive_captcha_count: int = 0
+    last_session_ok_at: str = ""
+    cooldown_until: str = ""
     last_error: str = ""
 
     @classmethod
@@ -95,6 +102,11 @@ class RunState:
             block_events_on_current_proxy=payload.get("block_events_on_current_proxy", 0),
             last_block_reason=payload.get("last_block_reason", ""),
             last_blocked_url=payload.get("last_blocked_url", ""),
+            session_risk_level=payload.get("session_risk_level", "low"),
+            last_session_preflight_status=payload.get("last_session_preflight_status", ""),
+            consecutive_captcha_count=payload.get("consecutive_captcha_count", 0),
+            last_session_ok_at=payload.get("last_session_ok_at", ""),
+            cooldown_until=payload.get("cooldown_until", ""),
             last_error=payload.get("last_error", ""),
         )
 
@@ -114,6 +126,11 @@ class RunState:
             "block_events_on_current_proxy": self.block_events_on_current_proxy,
             "last_block_reason": self.last_block_reason,
             "last_blocked_url": self.last_blocked_url,
+            "session_risk_level": self.session_risk_level,
+            "last_session_preflight_status": self.last_session_preflight_status,
+            "consecutive_captcha_count": self.consecutive_captcha_count,
+            "last_session_ok_at": self.last_session_ok_at,
+            "cooldown_until": self.cooldown_until,
             "last_error": self.last_error,
         }
 

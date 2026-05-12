@@ -181,6 +181,38 @@ def test_run_new_scrape_stops_when_session_preflight_reports_phone_verification(
     assert (tmp_path / "category_rank.csv").exists()
 
 
+def test_run_new_scrape_updates_captcha_cooldown_after_preflight_block(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+
+    class FakePage:
+        url = "https://www.aliexpress.com/verify"
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(
+        scrape_runner,
+        "run_session_preflight",
+        lambda page, search_url, warm_up: SessionPreflightResult(
+            status="captcha_blocked",
+            risk_level="high",
+            page_type="verify",
+            reasons=["captcha"],
+            warmed_up=False,
+        ),
+    )
+
+    scrape_runner.run_new_scrape(
+        manifest=_manifest(tmp_path, pages=1, enrich_detail=False),
+        groups=[],
+        run_dir=tmp_path,
+    )
+
+    state = scrape_runner.RunStateStore(tmp_path).load_state()
+    assert state.session_risk_level == "high"
+    assert state.last_session_preflight_status == "captcha_blocked"
+    assert state.consecutive_captcha_count == 1
+    assert state.cooldown_until != ""
+
+
 def test_run_new_scrape_fails_when_v2rayn_provider_has_no_healthy_proxy(tmp_path, monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
     from ali_mvp.proxy_pool import NoHealthyProxyError
