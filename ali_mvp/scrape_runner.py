@@ -46,7 +46,7 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
         consecutive_captcha_count=existing_state.consecutive_captcha_count,
         last_session_ok_at=existing_state.last_session_ok_at,
         cooldown_until=existing_state.cooldown_until,
-        identity_warning_code=existing_state.identity_warning_code,
+        identity_warning=dict(existing_state.identity_warning),
     )
 
     if _is_session_cooldown_active(cooldown_until=existing_state.cooldown_until, now_iso=manifest.created_at):
@@ -642,7 +642,7 @@ def _with_session_fields(existing: RunState, updated: RunState) -> RunState:
         consecutive_captcha_count=existing.consecutive_captcha_count,
         last_session_ok_at=existing.last_session_ok_at,
         cooldown_until=existing.cooldown_until,
-        identity_warning_code=existing.identity_warning_code,
+        identity_warning=dict(existing.identity_warning),
     )
 
 
@@ -658,7 +658,16 @@ def _collect_identity_warning(*, manifest: RunManifest, page: object) -> Browser
 
 
 def _with_identity_warning(state: RunState, warning: BrowserIdentityWarning | None) -> RunState:
-    return replace(state, identity_warning_code="" if warning is None else warning.code)
+    if warning is None:
+        return replace(state, identity_warning={})
+    return replace(
+        state,
+        identity_warning={
+            "code": warning.code,
+            "configured": dict(warning.configured),
+            "effective": dict(warning.effective),
+        },
+    )
 
 
 def _resolve_session_preflight(*, manifest: RunManifest, page: object) -> SessionPreflightResult | None:

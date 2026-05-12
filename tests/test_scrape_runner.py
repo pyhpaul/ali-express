@@ -364,8 +364,16 @@ def test_run_new_scrape_persists_identity_warning_without_reusing_last_error(tmp
     assert result == scrape_runner.RunResult(exit_code=0, accepted_count=0, blocked=False)
     assert state.last_error == ""
     assert summary.get("last_error", "") == ""
-    assert state.identity_warning_code == "user_agent_major_mismatch"
-    assert summary["identity_warning_code"] == "user_agent_major_mismatch"
+    assert state.identity_warning == {
+        "code": "user_agent_major_mismatch",
+        "configured": {"user_agent_major": 124},
+        "effective": {"user_agent_major": 126},
+    }
+    assert summary["identity_warning"] == {
+        "code": "user_agent_major_mismatch",
+        "configured": {"user_agent_major": 124},
+        "effective": {"user_agent_major": 126},
+    }
 
 
 def test_run_new_scrape_keeps_existing_cooldown_when_created_at_is_invalid_for_captcha(tmp_path, monkeypatch):

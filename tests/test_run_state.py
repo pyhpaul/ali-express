@@ -318,3 +318,24 @@ def test_run_state_round_trips_session_risk_fields():
     assert restored.last_session_preflight_status == "captcha_blocked"
     assert restored.consecutive_captcha_count == 2
     assert restored.cooldown_until == "2026-05-12T10:30:00Z"
+
+
+def test_run_state_summary_includes_full_identity_warning_structure(tmp_path):
+    store = RunStateStore(tmp_path)
+    state = RunState(
+        status="completed",
+        accepted_count=1,
+        identity_warning={
+            "code": "accept_language_mismatch",
+            "configured": {"accept_language_primary": "en-US"},
+            "effective": {"navigator_language": "fr-FR"},
+        },
+    )
+
+    store.save_summary(state)
+
+    assert store.load_summary()["identity_warning"] == {
+        "code": "accept_language_mismatch",
+        "configured": {"accept_language_primary": "en-US"},
+        "effective": {"navigator_language": "fr-FR"},
+    }

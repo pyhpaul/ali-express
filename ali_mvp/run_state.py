@@ -83,7 +83,7 @@ class RunState:
     consecutive_captcha_count: int = 0
     last_session_ok_at: str = ""
     cooldown_until: str = ""
-    identity_warning_code: str = ""
+    identity_warning: dict[str, Any] = field(default_factory=dict)
     last_error: str = ""
 
     @classmethod
@@ -108,7 +108,7 @@ class RunState:
             consecutive_captcha_count=payload.get("consecutive_captcha_count", 0),
             last_session_ok_at=payload.get("last_session_ok_at", ""),
             cooldown_until=payload.get("cooldown_until", ""),
-            identity_warning_code=payload.get("identity_warning_code", ""),
+            identity_warning=_deserialize_identity_warning(payload),
             last_error=payload.get("last_error", ""),
         )
 
@@ -133,7 +133,7 @@ class RunState:
             "consecutive_captcha_count": self.consecutive_captcha_count,
             "last_session_ok_at": self.last_session_ok_at,
             "cooldown_until": self.cooldown_until,
-            "identity_warning_code": self.identity_warning_code,
+            "identity_warning": dict(self.identity_warning),
             "last_error": self.last_error,
         }
 
@@ -174,8 +174,8 @@ class RunStateStore:
             "last_blocked_url": state.last_blocked_url,
             "resume_recommended": state.status in {"blocked", "failed"},
         }
-        if state.identity_warning_code:
-            summary["identity_warning_code"] = state.identity_warning_code
+        if state.identity_warning:
+            summary["identity_warning"] = dict(state.identity_warning)
         return summary
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
@@ -212,6 +212,27 @@ def _deserialize_pending_detail_queue(payload: Any) -> list[dict[str, Any]]:
             }
         )
     return queue
+
+
+def _deserialize_identity_warning(payload: dict[str, Any]) -> dict[str, Any]:
+    warning = payload.get("identity_warning")
+    if isinstance(warning, dict):
+        code = str(warning.get("code") or "")
+        if not code:
+            return {}
+        return {
+            "code": code,
+            "configured": dict(warning.get("configured") or {}),
+            "effective": dict(warning.get("effective") or {}),
+        }
+    legacy_code = str(payload.get("identity_warning_code") or "")
+    if not legacy_code:
+        return {}
+    return {
+        "code": legacy_code,
+        "configured": {},
+        "effective": {},
+    }
 
 
 def _normalize_browser_hardening(value: Any) -> str:
