@@ -271,8 +271,20 @@ def test_run_new_scrape_fails_fast_when_session_cooldown_is_active(tmp_path, mon
 
 def test_run_new_scrape_skips_session_preflight_when_manifest_turns_it_off(tmp_path, monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunState, RunStateStore
 
     manifest = replace(_manifest(tmp_path, pages=1, enrich_detail=False), session_preflight="off")
+    store = RunStateStore(tmp_path)
+    store.save_state(
+        RunState(
+            status="failed",
+            session_risk_level="high",
+            last_session_preflight_status="captcha_blocked",
+            consecutive_captcha_count=2,
+            last_session_ok_at="2026-05-11T07:00:00Z",
+            cooldown_until="2026-05-11T07:30:00Z",
+        )
+    )
 
     class FakePage:
         url = manifest.url
@@ -295,7 +307,59 @@ def test_run_new_scrape_skips_session_preflight_when_manifest_turns_it_off(tmp_p
         run_dir=tmp_path,
     )
 
+    state = store.load_state()
+
     assert result == scrape_runner.RunResult(exit_code=0, accepted_count=0, blocked=False)
+    assert state.last_session_preflight_status == "skipped"
+    assert state.consecutive_captcha_count == 2
+    assert state.cooldown_until == "2026-05-11T07:30:00Z"
+    assert state.session_risk_level == "high"
+
+
+def test_run_new_scrape_keeps_existing_cooldown_when_created_at_is_invalid_for_captcha(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunState, RunStateStore
+
+    manifest = replace(_manifest(tmp_path, pages=1, enrich_detail=False), created_at="not-a-timestamp")
+
+    class FakePage:
+        url = "https://www.aliexpress.com/verify"
+
+    store = RunStateStore(tmp_path)
+    store.save_state(
+        RunState(
+            status="failed",
+            session_risk_level="high",
+            last_session_preflight_status="captcha_blocked",
+            consecutive_captcha_count=1,
+            cooldown_until="2026-05-11T09:00:00Z",
+        )
+    )
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(
+        scrape_runner,
+        "run_session_preflight",
+        lambda page, search_url, warm_up: SessionPreflightResult(
+            status="captcha_blocked",
+            risk_level="high",
+            page_type="verify",
+            reasons=["captcha"],
+            warmed_up=False,
+        ),
+    )
+
+    result = scrape_runner.run_new_scrape(
+        manifest=manifest,
+        groups=[],
+        run_dir=tmp_path,
+    )
+
+    state = store.load_state()
+
+    assert result == scrape_runner.RunResult(exit_code=6, accepted_count=0, blocked=False)
+    assert state.consecutive_captcha_count == 2
+    assert state.cooldown_until == "2026-05-11T09:00:00Z"
 
 
 def test_run_new_scrape_completed_state_preserves_session_ready_fields(tmp_path, monkeypatch):

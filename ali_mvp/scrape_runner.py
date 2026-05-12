@@ -77,13 +77,16 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
             accept_language=manifest.accept_language,
         )
         preflight = _resolve_session_preflight(manifest=manifest, page=page)
-        running_state = _next_session_state(
-            existing=session_seed_state,
-            preflight_status=preflight.status,
-            risk_level=preflight.risk_level,
-            now_iso=manifest.created_at,
-        )
-        if preflight.status != "ready":
+        if preflight is None:
+            running_state = replace(session_seed_state, status="running", last_session_preflight_status="skipped")
+        else:
+            running_state = _next_session_state(
+                existing=session_seed_state,
+                preflight_status=preflight.status,
+                risk_level=preflight.risk_level,
+                now_iso=manifest.created_at,
+            )
+        if preflight is not None and preflight.status != "ready":
             failed_state = replace(
                 running_state,
                 status="failed",
@@ -556,7 +559,9 @@ def _next_session_state(*, existing: RunState, preflight_status: str, risk_level
         last_session_ok_at = now_iso
     elif preflight_status == "captcha_blocked":
         consecutive_captcha_count += 1
-        cooldown_until = _add_minutes(now_iso, 30 if consecutive_captcha_count == 1 else 120)
+        next_cooldown = _add_minutes(now_iso, 30 if consecutive_captcha_count == 1 else 120)
+        if next_cooldown:
+            cooldown_until = next_cooldown
 
     return replace(
         existing,
@@ -571,8 +576,10 @@ def _next_session_state(*, existing: RunState, preflight_status: str, risk_level
 def _add_minutes(now_iso: str, minutes: int) -> str:
     if not now_iso:
         return ""
-    normalized = now_iso.replace("Z", "+00:00")
-    scheduled = datetime.fromisoformat(normalized) + timedelta(minutes=minutes)
+    current = _parse_iso_utc(now_iso)
+    if current is None:
+        return ""
+    scheduled = current + timedelta(minutes=minutes)
     return scheduled.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
@@ -604,15 +611,9 @@ def _with_session_fields(existing: RunState, updated: RunState) -> RunState:
     )
 
 
-def _resolve_session_preflight(*, manifest: RunManifest, page: object) -> SessionPreflightResult:
+def _resolve_session_preflight(*, manifest: RunManifest, page: object) -> SessionPreflightResult | None:
     if manifest.session_preflight != "on":
-        return SessionPreflightResult(
-            status="ready",
-            risk_level="low",
-            page_type="skipped",
-            reasons=[],
-            warmed_up=False,
-        )
+        return None
     return run_session_preflight(page, search_url=manifest.url, warm_up=True)
 
 
