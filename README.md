@@ -36,6 +36,14 @@ Proxy and browser identity:
 - `--user-agent "ua-fixed"`
 - `--accept-language "en-US,en;q=0.9"`
 
+Recommended default for a single-account workflow:
+
+- keep one logged-in profile stable
+- keep one exit path stable
+- do not enable proxy-pool rotation unless you explicitly need a fallback path
+- if you do not pass `--proxy` or `--proxy-file`, the default `--proxy-provider manual` mode runs without a proxy pool
+- treat `--proxy-provider v2rayn` as an opt-in fallback mode, not the default path
+
 ### v2rayN sidecar proxy pool
 
 Use the local v2rayN installation as a proxy source:

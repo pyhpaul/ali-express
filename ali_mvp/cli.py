@@ -59,15 +59,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--proxy-provider",
         choices=("manual", "v2rayn"),
         default="manual",
-        help="Proxy provider: existing manual proxies or v2rayN sidecar pool.",
+        help="Proxy provider. Default 'manual' keeps a fixed direct/manual path; 'v2rayn' opt-in enables the sidecar proxy pool.",
     )
     scrape.add_argument(
         "--v2rayn-dir",
         default="",
         help="Root directory of the local v2rayN installation when --proxy-provider v2rayn is used.",
     )
-    scrape.add_argument("--proxy", default="", help="Single proxy URL for this run.")
-    scrape.add_argument("--proxy-file", default="", help="Text file with one proxy per line.")
+    scrape.add_argument("--proxy", default="", help="Single proxy URL for this run in manual mode.")
+    scrape.add_argument("--proxy-file", default="", help="Text file with one proxy per line in manual mode.")
     scrape.add_argument(
         "--max-blocks-per-proxy",
         type=int,
