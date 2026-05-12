@@ -28,6 +28,7 @@ def test_build_sidecar_config_overrides_port_server_and_routing():
     assert server["address"] == "1.1.1.1"
     assert server["port"] == 1111
     assert server["method"] == "aes-256-gcm"
+    assert server["password"] == "secret-a"
     assert config["routing"]["rules"][-1]["outboundTag"] == "proxy"
 
 
