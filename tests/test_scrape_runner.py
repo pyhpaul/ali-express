@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, replace
 from importlib import import_module
+from pathlib import Path
 
 import pytest
 
@@ -625,7 +626,24 @@ def test_run_new_scrape_persists_failed_state_when_browser_open_fails_and_clears
     assert "identity_warning" not in summary
 
 
-def test_resume_scrape_restores_proxy_key_and_closes_runtime(tmp_path, monkeypatch):
+def test_readme_documents_session_proxy_identity_hardening_defaults():
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+
+    assert "keep one logged-in profile stable" in readme
+    assert "keep one exit path stable" in readme
+    assert "stable browser major version / UA pair per account" in readme
+    assert "preflight stops the run before scraping when AliExpress is on login, phone verification, or captcha pages" in readme
+    assert "proxy health cooldown is fallback memory, not a periodic rotation scheduler" in readme
+    assert "session preflight + warm-up" in readme
+    assert "session risk persistence" in readme
+    assert "proxy health / cooldown" in readme
+    assert "browser identity warning" in readme
+    assert "automatic slider / captcha solving" in readme
+    assert "aggressive header / fingerprint pool rotation" in readme
+    assert "live proxy swap inside one browser session" in readme
+
+
+def test_resume_scrape_restores_saved_proxy_selection_without_live_hot_swap(tmp_path, monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
     from ali_mvp.run_state import RunState, RunStateStore
 
@@ -664,30 +682,41 @@ def test_resume_scrape_restores_proxy_key_and_closes_runtime(tmp_path, monkeypat
         )
     )
 
-    seen = {"restore": None, "closed": False}
+    seen = {"restore": None, "closed": False, "open_calls": []}
 
     class FakePage:
         url = manifest.url
 
     class FakePool:
         def __init__(self):
+            self.proxies = ["socks5://127.0.0.1:11081", "socks5://127.0.0.1:11082"]
+            self.keys = ["node-a", "node-b"]
             self.current_index = 0
             self.block_events_on_current = 0
 
         def restore_selection(self, *, current_key, current_index, block_events):
             seen["restore"] = (current_key, current_index, block_events)
+            if current_key in self.keys:
+                self.current_index = self.keys.index(current_key)
+            else:
+                self.current_index = current_index
+            self.block_events_on_current = block_events
 
         def current(self):
-            return "socks5://127.0.0.1:11082"
+            return self.proxies[self.current_index]
 
         def current_key(self):
-            return "node-b"
+            return self.keys[self.current_index]
 
         def close(self):
             seen["closed"] = True
 
     monkeypatch.setattr("ali_mvp.scrape_runner.ProxyPool.from_manifest", lambda **kwargs: FakePool())
-    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    def fake_open_listing_page(*args, **kwargs):
+        seen["open_calls"].append({"args": args, "kwargs": kwargs})
+        return FakePage()
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", fake_open_listing_page)
     monkeypatch.setattr(
         scrape_runner,
         "enrich_single_product_detail",
@@ -695,9 +724,26 @@ def test_resume_scrape_restores_proxy_key_and_closes_runtime(tmp_path, monkeypat
     )
 
     result = scrape_runner.resume_scrape(tmp_path, details_only=True)
+    resumed_state = store.load_state()
 
     assert result.exit_code == 0
     assert seen["restore"] == ("node-b", 1, 0)
+    assert seen["open_calls"] == [
+        {
+            "args": (manifest.url,),
+            "kwargs": {
+                "user_data_dir": manifest.user_data_dir,
+                "port": manifest.port,
+                "browser_hardening": manifest.browser_hardening,
+                "proxy": "socks5://127.0.0.1:11082",
+                "user_agent": manifest.user_agent,
+                "accept_language": manifest.accept_language,
+            },
+        }
+    ]
+    assert resumed_state.current_proxy_index == 1
+    assert resumed_state.current_proxy_key == "node-b"
+    assert resumed_state.block_events_on_current_proxy == 0
     assert seen["closed"] is True
 
 
