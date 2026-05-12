@@ -177,6 +177,16 @@ return (() => {
 })()
 """
 
+IDENTITY_SCRIPT = r"""
+return (() => {
+  return {
+    userAgent: navigator.userAgent || '',
+    language: navigator.language || '',
+    languages: Array.isArray(navigator.languages) ? navigator.languages : []
+  };
+})()
+"""
+
 
 def collect_raw_products(
     url: str,
@@ -259,6 +269,20 @@ def collect_listing_page_products(page: ChromiumPage, *, scroll_rounds: int = 8)
 def collect_session_signals(page: ChromiumPage) -> dict[str, object]:
     payload = page.run_js(SESSION_PREFLIGHT_SCRIPT)
     return dict(payload) if isinstance(payload, dict) else {}
+
+
+def collect_browser_identity(page: ChromiumPage) -> dict[str, object]:
+    if not hasattr(page, "run_js"):
+        return {"user_agent": "", "language": "", "languages": []}
+    payload = page.run_js(IDENTITY_SCRIPT)
+    if not isinstance(payload, dict):
+        return {"user_agent": "", "language": "", "languages": []}
+    languages = payload.get("languages")
+    return {
+        "user_agent": str(payload.get("userAgent") or ""),
+        "language": str(payload.get("language") or ""),
+        "languages": [str(item) for item in languages] if isinstance(languages, list) else [],
+    }
 
 
 def warm_up_search_session(page: ChromiumPage) -> None:

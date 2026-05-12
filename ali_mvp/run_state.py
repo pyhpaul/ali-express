@@ -83,6 +83,7 @@ class RunState:
     consecutive_captcha_count: int = 0
     last_session_ok_at: str = ""
     cooldown_until: str = ""
+    identity_warning_code: str = ""
     last_error: str = ""
 
     @classmethod
@@ -107,6 +108,7 @@ class RunState:
             consecutive_captcha_count=payload.get("consecutive_captcha_count", 0),
             last_session_ok_at=payload.get("last_session_ok_at", ""),
             cooldown_until=payload.get("cooldown_until", ""),
+            identity_warning_code=payload.get("identity_warning_code", ""),
             last_error=payload.get("last_error", ""),
         )
 
@@ -131,6 +133,7 @@ class RunState:
             "consecutive_captcha_count": self.consecutive_captcha_count,
             "last_session_ok_at": self.last_session_ok_at,
             "cooldown_until": self.cooldown_until,
+            "identity_warning_code": self.identity_warning_code,
             "last_error": self.last_error,
         }
 
@@ -163,7 +166,7 @@ class RunStateStore:
         return self._read_json(self.summary_path)
 
     def _build_summary(self, state: RunState) -> dict[str, Any]:
-        return {
+        summary = {
             "status": state.status,
             "current_listing_page": state.current_listing_page,
             "accepted_count": state.accepted_count,
@@ -171,6 +174,9 @@ class RunStateStore:
             "last_blocked_url": state.last_blocked_url,
             "resume_recommended": state.status in {"blocked", "failed"},
         }
+        if state.identity_warning_code:
+            summary["identity_warning_code"] = state.identity_warning_code
+        return summary
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

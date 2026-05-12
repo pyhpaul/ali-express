@@ -128,6 +128,22 @@ def test_scrape_parser_accepts_v2rayn_provider():
     assert args.v2rayn_dir == "C:/Users/test/v2rayN"
 
 
+def test_scrape_parser_accepts_session_preflight_option():
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "scrape",
+            "--keyword",
+            "home appliance accessories",
+            "--session-preflight",
+            "off",
+        ]
+    )
+
+    assert args.session_preflight == "off"
+
+
 def test_run_scrape_defaults_missing_proxy_provider_fields_for_legacy_namespace(monkeypatch, tmp_path):
     from ali_mvp import cli
 
@@ -175,6 +191,7 @@ def test_run_scrape_defaults_missing_proxy_provider_fields_for_legacy_namespace(
     assert code == 0
     assert seen["manifest"].proxy_provider == "manual"
     assert seen["manifest"].v2rayn_dir == ""
+    assert seen["manifest"].session_preflight == "on"
 
 
 def test_run_scrape_rejects_v2rayn_provider_without_v2rayn_dir():

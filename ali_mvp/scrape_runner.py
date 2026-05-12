@@ -9,11 +9,13 @@ from typing import Any
 from .browser import (
     _attach_listing_context,
     advance_listing_page,
+    collect_browser_identity,
     collect_listing_page_products,
     dedupe_listing_products,
     enrich_single_product_detail,
     open_listing_page,
 )
+from .browser_identity import BrowserIdentityWarning, validate_browser_identity
 from .extractor import normalize_products
 from .filtering import FilterGroup, filter_products, load_filter_groups, prefilter_listing_products
 from .output import REVIEW_FIELDS, read_csv_rows, write_dict_csv, write_filter_audit_csv, write_products_csv, write_rank_csv
@@ -44,6 +46,7 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
         consecutive_captcha_count=existing_state.consecutive_captcha_count,
         last_session_ok_at=existing_state.last_session_ok_at,
         cooldown_until=existing_state.cooldown_until,
+        identity_warning_code=existing_state.identity_warning_code,
     )
 
     if _is_session_cooldown_active(cooldown_until=existing_state.cooldown_until, now_iso=manifest.created_at):
@@ -77,6 +80,8 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
             user_agent=manifest.user_agent,
             accept_language=manifest.accept_language,
         )
+        identity_warning = _collect_identity_warning(manifest=manifest, page=page)
+        session_seed_state = _with_identity_warning(session_seed_state, identity_warning)
         preflight = _resolve_session_preflight(manifest=manifest, page=page)
         if preflight is None:
             running_state = replace(session_seed_state, status="running", last_session_preflight_status="skipped")
@@ -203,8 +208,9 @@ def resume_scrape(
             user_agent=effective_user_agent,
             accept_language=effective_accept_language,
         )
+        identity_warning = _collect_identity_warning(manifest=proxy_manifest, page=page)
 
-        resumed_state = state
+        resumed_state = _with_identity_warning(state, identity_warning)
         review_context_rows = _load_existing_review_context_rows(run_dir)
         pending_queue = list(state.pending_detail_queue)
         if pending_queue:
@@ -636,7 +642,23 @@ def _with_session_fields(existing: RunState, updated: RunState) -> RunState:
         consecutive_captcha_count=existing.consecutive_captcha_count,
         last_session_ok_at=existing.last_session_ok_at,
         cooldown_until=existing.cooldown_until,
+        identity_warning_code=existing.identity_warning_code,
     )
+
+
+def _collect_identity_warning(*, manifest: RunManifest, page: object) -> BrowserIdentityWarning | None:
+    identity = collect_browser_identity(page)
+    return validate_browser_identity(
+        configured_user_agent=manifest.user_agent,
+        configured_accept_language=manifest.accept_language,
+        effective_user_agent=str(identity.get("user_agent") or ""),
+        effective_language=str(identity.get("language") or ""),
+        effective_languages=[str(item) for item in identity.get("languages", [])] if isinstance(identity.get("languages"), list) else [],
+    )
+
+
+def _with_identity_warning(state: RunState, warning: BrowserIdentityWarning | None) -> RunState:
+    return replace(state, identity_warning_code="" if warning is None else warning.code)
 
 
 def _resolve_session_preflight(*, manifest: RunManifest, page: object) -> SessionPreflightResult | None:

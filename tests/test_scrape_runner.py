@@ -316,6 +316,58 @@ def test_run_new_scrape_skips_session_preflight_when_manifest_turns_it_off(tmp_p
     assert state.session_risk_level == "high"
 
 
+def test_run_new_scrape_persists_identity_warning_without_reusing_last_error(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.browser_identity import BrowserIdentityWarning
+    from ali_mvp.run_state import RunStateStore
+
+    manifest = _manifest(tmp_path, pages=1, enrich_detail=False)
+
+    class FakePage:
+        url = manifest.url
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(
+        scrape_runner,
+        "collect_browser_identity",
+        lambda page: {
+            "user_agent": "effective-ua",
+            "language": "en-US",
+            "languages": ["en-US", "en"],
+        },
+    )
+    monkeypatch.setattr(
+        scrape_runner,
+        "validate_browser_identity",
+        lambda **kwargs: BrowserIdentityWarning(
+            code="user_agent_major_mismatch",
+            configured={"user_agent_major": 124},
+            effective={"user_agent_major": 126},
+        ),
+    )
+    monkeypatch.setattr(
+        scrape_runner,
+        "_run_scrape_from_state",
+        lambda **kwargs: scrape_runner.RunResult(exit_code=0, accepted_count=0, blocked=False),
+    )
+
+    result = scrape_runner.run_new_scrape(
+        manifest=manifest,
+        groups=[],
+        run_dir=tmp_path,
+    )
+
+    store = RunStateStore(tmp_path)
+    state = store.load_state()
+    summary = store.load_summary()
+
+    assert result == scrape_runner.RunResult(exit_code=0, accepted_count=0, blocked=False)
+    assert state.last_error == ""
+    assert summary.get("last_error", "") == ""
+    assert state.identity_warning_code == "user_agent_major_mismatch"
+    assert summary["identity_warning_code"] == "user_agent_major_mismatch"
+
+
 def test_run_new_scrape_keeps_existing_cooldown_when_created_at_is_invalid_for_captcha(tmp_path, monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
     from ali_mvp.run_state import RunState, RunStateStore
