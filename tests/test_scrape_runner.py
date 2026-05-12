@@ -5,6 +5,7 @@ from dataclasses import asdict, replace
 from importlib import import_module
 
 from ali_mvp.filtering import FilterGroup
+from ali_mvp.output import read_csv_rows
 from ali_mvp.run_state import RunManifest
 from ali_mvp.scoring import ProductRecord
 
@@ -775,6 +776,183 @@ def test_run_new_scrape_attaches_listing_context_before_detail_enrich(tmp_path, 
     ]
 
 
+def test_run_new_scrape_returns_exit_code_2_when_no_products_are_accepted(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+
+    class FakePage:
+        url = "https://www.aliexpress.com/wholesale?SearchText=women+dress"
+
+    raw_product = {
+        "title": "Dress Reject",
+        "url": "https://www.aliexpress.com/item/1009.html",
+        "resolvedProductUrl": "https://www.aliexpress.com/item/1009.html",
+    }
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(scrape_runner, "collect_listing_page_products", lambda page: [dict(raw_product)])
+    monkeypatch.setattr(scrape_runner, "dedupe_listing_products", lambda products, seen_keys: products)
+    monkeypatch.setattr(
+        scrape_runner,
+        "prefilter_listing_products",
+        lambda raw_products, groups, source_type, source_value: (raw_products, []),
+    )
+    monkeypatch.setattr(
+        scrape_runner,
+        "normalize_products",
+        lambda products, *, source_type, source_value, scraped_at: [
+            _product_record(product_url=str(product["resolvedProductUrl"]), title=str(product["title"]), scraped_at=scraped_at)
+            for product in products
+        ],
+    )
+    monkeypatch.setattr(
+        scrape_runner,
+        "filter_products",
+        lambda products, groups: (
+            [],
+            [
+                {
+                    "source_type": product.source_type,
+                    "source_value": product.source_value,
+                    "title": product.title,
+                    "product_url": product.product_url,
+                    "filter_decision": "rejected",
+                    "filter_stage": "detail_post_enrich",
+                    "reject_groups": "manual_blacklist",
+                    "reject_terms": "dress",
+                    "reject_fields": "title",
+                    "warning_groups": "",
+                    "warning_terms": "",
+                    "warning_fields": "",
+                }
+                for product in products
+            ],
+        ),
+    )
+    monkeypatch.setattr(scrape_runner, "advance_listing_page", lambda page, target_page: False)
+
+    result = scrape_runner.run_new_scrape(
+        manifest=_manifest(tmp_path, pages=1, enrich_detail=False),
+        groups=[],
+        run_dir=tmp_path,
+    )
+
+    summary = json.loads((tmp_path / "run_summary.json").read_text(encoding="utf-8"))
+
+    assert result == scrape_runner.RunResult(exit_code=2, accepted_count=0, blocked=False)
+    assert summary["status"] == "completed"
+    assert summary["accepted_count"] == 0
+
+
+def test_run_new_scrape_writes_review_context_for_detail_rejections(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    manifest = _manifest(tmp_path, pages=1, enrich_detail=True)
+
+    class FakePage:
+        url = manifest.url
+
+    raw_product = {
+        "title": "Dress Reject",
+        "url": "https://www.aliexpress.com/item/1010.html",
+        "resolvedProductUrl": "https://www.aliexpress.com/item/1010.html",
+    }
+
+    def fake_detail(page, product):
+        product["detailStatus"] = "detail_enriched"
+        product["attributesText"] = '{"Material":"Silk"}'
+        product["descriptionText"] = "Rejected detail context"
+        return "detail_enriched"
+
+    def fake_normalize(products, *, source_type, source_value, scraped_at):
+        return [
+            _product_record(
+                product_url=str(product["resolvedProductUrl"]),
+                title=str(product["title"]),
+                scraped_at=scraped_at,
+            )
+            for product in products
+        ]
+
+    def fake_filter(products, groups):
+        assert len(products) == 1
+        product = products[0]
+        rejected = replace(
+            product,
+            attributes_text='{"Material":"Silk"}',
+            description_text="Rejected detail context",
+            detail_status="detail_enriched",
+        )
+        return (
+            [],
+            [
+                {
+                    "source_type": rejected.source_type,
+                    "source_value": rejected.source_value,
+                    "title": rejected.title,
+                    "product_url": rejected.product_url,
+                    "filter_decision": "rejected",
+                    "filter_stage": "detail_post_enrich",
+                    "reject_groups": "manual_blacklist",
+                    "reject_terms": "silk",
+                    "reject_fields": "attributes_text",
+                    "warning_groups": "",
+                    "warning_terms": "",
+                    "warning_fields": "",
+                }
+            ],
+        )
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(scrape_runner, "collect_listing_page_products", lambda page: [dict(raw_product)])
+    monkeypatch.setattr(scrape_runner, "dedupe_listing_products", lambda products, seen_keys: products)
+    monkeypatch.setattr(
+        scrape_runner,
+        "prefilter_listing_products",
+        lambda raw_products, groups, source_type, source_value: (raw_products, []),
+    )
+    monkeypatch.setattr(scrape_runner, "enrich_single_product_detail", fake_detail)
+    monkeypatch.setattr(scrape_runner, "normalize_products", fake_normalize)
+    monkeypatch.setattr(scrape_runner, "filter_products", fake_filter)
+    monkeypatch.setattr(scrape_runner, "advance_listing_page", lambda page, target_page: False)
+
+    result = scrape_runner.run_new_scrape(
+        manifest=manifest,
+        groups=[],
+        run_dir=tmp_path,
+    )
+
+    review_rows = read_csv_rows(tmp_path / "products_review.csv")
+
+    assert result == scrape_runner.RunResult(exit_code=2, accepted_count=0, blocked=False)
+    assert review_rows == [
+        {
+            "source_type": "keyword",
+            "source_value": "women dress",
+            "title": "Dress Reject",
+            "product_url": "https://www.aliexpress.com/item/1010.html",
+            "image_url": "https://www.aliexpress.com/item/1010.html.jpg",
+            "price": "$12.50",
+            "search_card_url": "https://www.aliexpress.com/item/1010.html",
+            "entry_type": "item_card",
+            "is_promoted": "False",
+            "promo_channel": "",
+            "promotion_text": "",
+            "shop_name": "Example Store",
+            "shipping_text": "Free shipping",
+            "attributes_text": '{"Material":"Silk"}',
+            "description_text": "Rejected detail context",
+            "detail_status": "detail_enriched",
+            "filter_decision": "rejected",
+            "filter_stage": "detail_post_enrich",
+            "reject_groups": "manual_blacklist",
+            "reject_terms": "silk",
+            "reject_fields": "attributes_text",
+            "warning_groups": "",
+            "warning_terms": "",
+            "warning_fields": "",
+        }
+    ]
+
+
 def test_run_new_scrape_preserves_seen_product_key_order_with_multiple_new_items_on_one_page(tmp_path, monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
 
@@ -1383,9 +1561,10 @@ def test_resume_scrape_details_only_preserves_rejected_pending_products_in_audit
 
     resumed_state = store.load_state()
     summary = store.load_summary()
+    review_rows = read_csv_rows(tmp_path / "products_review.csv")
 
     assert detail_calls == [pending_product["resolvedProductUrl"]]
-    assert result.exit_code == 0
+    assert result.exit_code == 2
     assert resumed_state.status == "completed"
     assert resumed_state.pending_detail_queue == []
     assert resumed_state.accepted_products == []
@@ -1406,6 +1585,8 @@ def test_resume_scrape_details_only_preserves_rejected_pending_products_in_audit
             "warning_fields": "",
         }
     ]
+    assert review_rows[0]["attributes_text"] == '{"Material":"Wool"}'
+    assert review_rows[0]["detail_status"] == "detail_enriched"
     assert summary["status"] == "completed"
 
 

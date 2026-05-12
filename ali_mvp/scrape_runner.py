@@ -14,11 +14,11 @@ from .browser import (
 )
 from .extractor import normalize_products
 from .filtering import FilterGroup, filter_products, load_filter_groups, prefilter_listing_products
-from .output import REVIEW_FIELDS, write_dict_csv, write_filter_audit_csv, write_products_csv, write_rank_csv
+from .output import REVIEW_FIELDS, read_csv_rows, write_dict_csv, write_filter_audit_csv, write_products_csv, write_rank_csv
 from .proxy_pool import NoHealthyProxyError, ProxyPool
 from .review import build_review_rows
 from .run_state import RunManifest, RunState, RunStateStore
-from .scoring import ProductRecord, aggregate_rank
+from .scoring import ProductRecord, aggregate_rank, parse_count, parse_float
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,7 @@ def resume_scrape(
         store.save_summary(state)
         _write_outputs(run_dir, state.accepted_products, state.audit_rows)
         return RunResult(
-            exit_code=0,
+            exit_code=_completed_exit_code(state.accepted_count),
             accepted_count=state.accepted_count,
             blocked=False,
         )
@@ -148,19 +148,26 @@ def resume_scrape(
         )
 
         resumed_state = state
+        review_context_rows = _load_existing_review_context_rows(run_dir)
         pending_queue = list(state.pending_detail_queue)
         if pending_queue:
-            resumed_state, blocked = _resume_pending_details(
+            resumed_state, blocked, review_context_rows = _resume_pending_details(
                 state=resumed_state,
                 pending_queue=pending_queue,
                 page=page,
                 manifest=manifest,
                 groups=groups,
+                review_context_rows=review_context_rows,
             )
             resumed_state = _with_proxy_state(resumed_state, proxy_pool)
             store.save_state(resumed_state)
             store.save_summary(resumed_state)
-            _write_outputs(run_dir, resumed_state.accepted_products, resumed_state.audit_rows)
+            _write_outputs(
+                run_dir,
+                resumed_state.accepted_products,
+                resumed_state.audit_rows,
+                review_context_rows=review_context_rows,
+            )
             if blocked:
                 return RunResult(
                     exit_code=3,
@@ -172,9 +179,14 @@ def resume_scrape(
             completed_state = _with_proxy_state(replace(resumed_state, status="completed"), proxy_pool)
             store.save_state(completed_state)
             store.save_summary(completed_state)
-            _write_outputs(run_dir, completed_state.accepted_products, completed_state.audit_rows)
+            _write_outputs(
+                run_dir,
+                completed_state.accepted_products,
+                completed_state.audit_rows,
+                review_context_rows=review_context_rows,
+            )
             return RunResult(
-                exit_code=0,
+                exit_code=_completed_exit_code(completed_state.accepted_count),
                 accepted_count=completed_state.accepted_count,
                 blocked=False,
             )
@@ -200,11 +212,13 @@ def _resume_pending_details(
     page: object,
     manifest: RunManifest,
     groups: list[FilterGroup],
-) -> tuple[RunState, bool]:
+    review_context_rows: list[dict[str, Any]],
+) -> tuple[RunState, bool, list[dict[str, Any]]]:
     accepted_products = list(state.accepted_products)
     audit_rows = list(state.audit_rows)
     normalized_count = state.normalized_count
     completed_products: list[dict[str, Any]] = []
+    updated_review_context_rows = list(review_context_rows)
 
     for index, pending_product in enumerate(pending_queue):
         raw_product = dict(pending_product)
@@ -212,13 +226,14 @@ def _resume_pending_details(
         if status != "detail_enriched":
             status = enrich_single_product_detail(page, raw_product)
         if status == "captcha_blocked":
-            accepted_products, audit_rows, normalized_delta = _finalize_pending_products(
+            accepted_products, audit_rows, normalized_delta, normalized_rows = _finalize_pending_products(
                 manifest=manifest,
                 groups=groups,
                 accepted_products=accepted_products,
                 audit_rows=audit_rows,
                 raw_products=completed_products,
             )
+            updated_review_context_rows = _merge_review_context_rows(updated_review_context_rows, normalized_rows)
             blocked_queue = [raw_product]
             blocked_queue.extend(dict(item) for item in pending_queue[index + 1 :])
             blocked_state = replace(
@@ -232,16 +247,17 @@ def _resume_pending_details(
                 last_block_reason="captcha_blocked",
                 last_blocked_url=_product_url(raw_product),
             )
-            return blocked_state, True
+            return blocked_state, True, updated_review_context_rows
         completed_products.append(raw_product)
 
-    accepted_products, audit_rows, normalized_delta = _finalize_pending_products(
+    accepted_products, audit_rows, normalized_delta, normalized_rows = _finalize_pending_products(
         manifest=manifest,
         groups=groups,
         accepted_products=accepted_products,
         audit_rows=audit_rows,
         raw_products=completed_products,
     )
+    updated_review_context_rows = _merge_review_context_rows(updated_review_context_rows, normalized_rows)
     resumed_state = replace(
         state,
         status="running",
@@ -253,7 +269,7 @@ def _resume_pending_details(
         last_block_reason="",
         last_blocked_url="",
     )
-    return resumed_state, False
+    return resumed_state, False, updated_review_context_rows
 
 
 def _rebuild_accepted_products(
@@ -266,13 +282,41 @@ def _rebuild_accepted_products(
 def _merge_detail_into_record(record: ProductRecord, product: dict[str, object], status: str) -> ProductRecord:
     return replace(
         record,
-        detail_rating=float(product.get("detailRating", record.detail_rating) or record.detail_rating),
-        detail_review_count=int(product.get("detailReviewCount", record.detail_review_count) or record.detail_review_count),
+        promo_channel=str(product.get("promoChannel", record.promo_channel) or record.promo_channel),
+        promotion_text=str(product.get("promotionText", record.promotion_text) or record.promotion_text),
+        shop_name=str(product.get("shopName", record.shop_name) or record.shop_name),
+        shipping_text=str(product.get("shippingText", record.shipping_text) or record.shipping_text),
+        detail_rating=parse_float(str(product.get("detailRatingText") or product.get("detailRating") or record.detail_rating)),
+        detail_review_count=parse_count(
+            str(product.get("detailReviewText") or product.get("detailReviewCount") or record.detail_review_count)
+        ),
         breadcrumb=str(product.get("breadcrumb", record.breadcrumb) or record.breadcrumb),
         attributes_text=str(product.get("attributesText", record.attributes_text) or record.attributes_text),
         description_text=str(product.get("descriptionText", record.description_text) or record.description_text),
         detail_status=str(product.get("detailStatus", status) or status),
     )
+
+
+def _merge_detail_context_into_records(
+    records: list[ProductRecord],
+    raw_products: list[dict[str, Any]],
+) -> list[ProductRecord]:
+    if not records or not raw_products:
+        return list(records)
+
+    raw_by_url = {
+        product_url: dict(product)
+        for product in raw_products
+        if (product_url := _product_url(product))
+    }
+    merged: list[ProductRecord] = []
+    for record in records:
+        raw_product = raw_by_url.get(record.product_url)
+        if raw_product is None:
+            merged.append(record)
+            continue
+        merged.append(_merge_detail_into_record(record, raw_product, record.detail_status))
+    return merged
 
 
 def _run_scrape_from_state(
@@ -288,6 +332,7 @@ def _run_scrape_from_state(
 ) -> RunResult:
     accepted_products = list(state.accepted_products)
     audit_rows = list(state.audit_rows)
+    review_context_rows = _load_existing_review_context_rows(run_dir)
     seen_key_order = list(state.seen_product_keys)
     seen_key_order_index = set(seen_key_order)
     seen_keys = set(seen_key_order)
@@ -348,6 +393,11 @@ def _run_scrape_from_state(
             source_value=manifest.source_value,
             scraped_at=manifest.created_at,
         )
+        normalized = _merge_detail_context_into_records(normalized, ready_to_normalize)
+        review_context_rows = _merge_review_context_rows(
+            review_context_rows,
+            [asdict(product) for product in normalized],
+        )
         normalized_count += len(normalized)
         accepted_products, audit_rows = _apply_filtered_products(
             manifest=manifest,
@@ -385,7 +435,12 @@ def _run_scrape_from_state(
         store.save_summary(checkpoint_state)
 
         if blocked:
-            _write_outputs(run_dir, accepted_products, audit_rows)
+            _write_outputs(
+                run_dir,
+                accepted_products,
+                audit_rows,
+                review_context_rows=review_context_rows,
+            )
             return RunResult(exit_code=3, accepted_count=len(accepted_products), blocked=True)
 
         if len(accepted_products) >= manifest.max_items:
@@ -415,8 +470,16 @@ def _run_scrape_from_state(
     )
     store.save_state(final_state)
     store.save_summary(final_state)
-    _write_outputs(run_dir, accepted_products, audit_rows)
-    return RunResult(exit_code=0, accepted_count=len(accepted_products))
+    _write_outputs(
+        run_dir,
+        accepted_products,
+        audit_rows,
+        review_context_rows=review_context_rows,
+    )
+    return RunResult(
+        exit_code=_completed_exit_code(len(accepted_products)),
+        accepted_count=len(accepted_products),
+    )
 
 
 def _enrich_listing_survivors(
@@ -469,15 +532,16 @@ def _finalize_pending_products(
     accepted_products: list[ProductRecord],
     audit_rows: list[dict[str, str]],
     raw_products: list[dict[str, Any]],
-) -> tuple[list[ProductRecord], list[dict[str, str]], int]:
+) -> tuple[list[ProductRecord], list[dict[str, str]], int, list[dict[str, Any]]]:
     if not raw_products:
-        return list(accepted_products), list(audit_rows), 0
+        return list(accepted_products), list(audit_rows), 0, []
     normalized = normalize_products(
         raw_products,
         source_type=manifest.source_type,
         source_value=manifest.source_value,
         scraped_at=manifest.created_at,
     )
+    normalized = _merge_detail_context_into_records(normalized, raw_products)
     updated_products, updated_audit = _apply_filtered_products(
         manifest=manifest,
         groups=groups,
@@ -485,7 +549,7 @@ def _finalize_pending_products(
         audit_rows=audit_rows,
         normalized=normalized,
     )
-    return updated_products, updated_audit, len(normalized)
+    return updated_products, updated_audit, len(normalized), [asdict(product) for product in normalized]
 
 
 def _move_to_listing_page(page: object, target_page: int) -> bool:
@@ -510,9 +574,46 @@ def _with_proxy_state(state: RunState, proxy_pool: ProxyPool) -> RunState:
     )
 
 
-def _write_outputs(run_dir: Path, accepted_products: list[ProductRecord], audit_rows: list[dict[str, str]]) -> None:
+def _write_outputs(
+    run_dir: Path,
+    accepted_products: list[ProductRecord],
+    audit_rows: list[dict[str, str]],
+    *,
+    review_context_rows: list[dict[str, Any]] | None = None,
+) -> None:
+    merged_review_context_rows = _merge_review_context_rows(
+        _load_existing_review_context_rows(run_dir),
+        review_context_rows if review_context_rows is not None else [asdict(product) for product in accepted_products],
+    )
     write_products_csv(run_dir / "products.csv", accepted_products)
     write_filter_audit_csv(run_dir / "products_filter_audit.csv", audit_rows)
-    review_rows = build_review_rows([asdict(product) for product in accepted_products], audit_rows)
+    review_rows = build_review_rows(merged_review_context_rows, audit_rows)
     write_dict_csv(run_dir / "products_review.csv", REVIEW_FIELDS, review_rows)
     write_rank_csv(run_dir / "category_rank.csv", aggregate_rank(accepted_products))
+
+
+def _completed_exit_code(accepted_count: int) -> int:
+    return 0 if accepted_count > 0 else 2
+
+
+def _load_existing_review_context_rows(run_dir: Path) -> list[dict[str, str]]:
+    review_path = run_dir / "products_review.csv"
+    if not review_path.exists():
+        return []
+    return read_csv_rows(review_path)
+
+
+def _merge_review_context_rows(
+    existing_rows: list[dict[str, Any]],
+    new_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged_by_url: dict[str, dict[str, Any]] = {}
+    for row in existing_rows:
+        product_url = str(row.get("product_url", "") or "")
+        if product_url:
+            merged_by_url[product_url] = dict(row)
+    for row in new_rows:
+        product_url = str(row.get("product_url", "") or "")
+        if product_url:
+            merged_by_url[product_url] = dict(row)
+    return list(merged_by_url.values())

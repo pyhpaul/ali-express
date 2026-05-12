@@ -103,6 +103,58 @@ def test_run_postprocess_for_dir_writes_rejected_review_labels(tmp_path):
     assert review_only[0]["review_note"] == "拒绝原因: 带电供电类"
 
 
+def test_run_postprocess_for_dir_prefers_existing_review_rows_for_rejected_details(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "products.csv").write_text(
+        "source_type,source_value,title,price,sold_count,rating,review_count,product_url,search_card_url,image_url,entry_type,is_promoted,promo_channel,promotion_text,promo_landing_url,shop_name,shipping_text,detail_rating,detail_review_count,breadcrumb,attributes_text,description_text,detail_status,scraped_at\n",
+        encoding="utf-8-sig",
+    )
+    (run_dir / "products_filter_audit.csv").write_text(
+        "source_type,source_value,title,product_url,filter_decision,filter_stage,reject_groups,reject_terms,reject_fields,warning_groups,warning_terms,warning_fields\n"
+        "keyword,home appliance accessories,Pulse igniter,https://example.test/item/3,rejected,detail_post_enrich,ignition_control,igniter,attributes_text,,,\n",
+        encoding="utf-8-sig",
+    )
+    (run_dir / "products_review.csv").write_text(
+        "source_type,source_value,title,product_url,image_url,price,search_card_url,entry_type,is_promoted,promo_channel,promotion_text,shop_name,shipping_text,attributes_text,description_text,detail_status,filter_decision,filter_stage,reject_groups,reject_terms,reject_fields,warning_groups,warning_terms,warning_fields\n"
+        "keyword,home appliance accessories,Pulse igniter,https://example.test/item/3,https://example.test/item/3.jpg,$9.90,https://example.test/card/3,item_card,False,,,Store C,Fast delivery,\"{\"\"Mode\"\":\"\"Pulse\"\"}\",Ignition module,detail_enriched,rejected,detail_post_enrich,ignition_control,igniter,attributes_text,,,\n",
+        encoding="utf-8-sig",
+    )
+
+    run_postprocess_for_dir(
+        run_dir,
+        translator=lambda text: {"Pulse igniter": "脉冲点火器", "Store C": "C店铺", "Mode: Pulse": "模式：脉冲"}.get(text, text),
+    )
+
+    review_only = read_csv_rows(run_dir / "review_only.csv")
+    audit_zh = read_csv_rows(run_dir / "products_filter_audit_zh.csv")
+
+    assert review_only == [
+        {
+            "source_type": "keyword",
+            "source_value": "home appliance accessories",
+            "title": "Pulse igniter",
+            "title_zh": "脉冲点火器",
+            "product_url": "https://example.test/item/3",
+            "image_url": "https://example.test/item/3.jpg",
+            "price": "$9.90",
+            "entry_type": "item_card",
+            "shop_name": "Store C",
+            "shop_name_zh": "C店铺",
+            "promotion_text": "",
+            "promotion_text_zh": "",
+            "attributes_summary": "Mode: Pulse",
+            "attributes_summary_zh": "模式：脉冲",
+            "decision_label": "拒绝入库",
+            "stage_label": "详情补充后命中",
+            "review_note": "拒绝原因: 点火控制类",
+        }
+    ]
+    assert audit_zh[0]["decision_label"] == "拒绝入库"
+    assert audit_zh[0]["stage_label"] == "详情补充后命中"
+    assert audit_zh[0]["reason_zh"] == "点火控制类"
+
+
 def test_run_postprocess_for_dir_ignores_identity_cache_when_namespace_changes(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()

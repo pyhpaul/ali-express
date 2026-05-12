@@ -47,7 +47,7 @@ DECISION_LABELS = {
 def run_postprocess_for_dir(run_dir: Path, *, translator, translation_cache_namespace: str = "default") -> None:
     products = read_csv_rows(run_dir / "products.csv")
     audit_rows = read_csv_rows(run_dir / "products_filter_audit.csv")
-    review_rows = build_review_rows(products, audit_rows)
+    review_rows = _load_review_rows(run_dir, products=products, audit_rows=audit_rows)
     write_dict_csv(run_dir / "products_review.csv", REVIEW_FIELDS, review_rows)
 
     texts = _collect_translation_texts(review_rows)
@@ -96,6 +96,20 @@ def _collect_translation_texts(review_rows: list[dict[str, str]]) -> list[str]:
                 seen.add(text)
                 texts.append(text)
     return texts
+
+
+def _load_review_rows(
+    run_dir: Path,
+    *,
+    products: list[dict[str, str]],
+    audit_rows: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    review_path = run_dir / "products_review.csv"
+    if review_path.exists():
+        existing_review_rows = read_csv_rows(review_path)
+        if len(existing_review_rows) == len(audit_rows):
+            return existing_review_rows
+    return build_review_rows(products, audit_rows)
 
 
 def _build_products_zh_rows(
