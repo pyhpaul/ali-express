@@ -1,5 +1,6 @@
 import pytest
 
+from ali_mvp.proxy_health import ProxyHealthStore
 from ali_mvp.proxy_pool import NoHealthyProxyError, ProxyPool
 from ali_mvp.run_state import RunManifest
 from ali_mvp.sidecar_proxy import SidecarEndpoint, SidecarRuntime
@@ -189,3 +190,22 @@ def test_proxy_pool_close_forwards_to_runtime_close():
     pool.close()
 
     assert close_calls == ["closed"]
+
+
+def test_proxy_pool_skips_nodes_in_cooldown(tmp_path):
+    health_file = tmp_path / "_proxy_health.json"
+    health_file.write_text(
+        '{"node-a":{"success_count":0,"timeout_count":0,"captcha_count":1,"block_count":1,"last_event":"captcha","last_failed_at":"2026-05-12T10:00:00Z","cooldown_until":"2099-01-01T00:00:00Z"}}',
+        encoding="utf-8",
+    )
+
+    pool = ProxyPool(
+        proxies=["socks5://127.0.0.1:11080", "socks5://127.0.0.1:11081"],
+        proxy_keys=["node-a", "node-b"],
+        proxy_labels=["A", "B"],
+        max_blocks_per_proxy=2,
+    )
+    pool.health_store = ProxyHealthStore(health_file)
+    pool.health_records = pool.health_store.load()
+
+    assert pool._eligible_indices(now_iso="2026-05-12T12:00:00Z") == [1]

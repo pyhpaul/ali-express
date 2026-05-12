@@ -99,7 +99,7 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
             return RunResult(exit_code=6, accepted_count=failed_state.accepted_count, blocked=False)
         store.save_state(running_state)
         store.save_summary(running_state)
-        return _run_scrape_from_state(
+        result = _run_scrape_from_state(
             manifest=manifest,
             groups=groups,
             run_dir=run_dir,
@@ -109,6 +109,8 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
             state=running_state,
             start_page=1,
         )
+        _record_proxy_health(proxy_pool=proxy_pool, state=store.load_state(), blocked=result.blocked, now_iso=manifest.created_at)
+        return result
     finally:
         proxy_pool.close()
 
@@ -218,6 +220,7 @@ def resume_scrape(
                 review_context_rows=review_context_rows,
             )
             if blocked:
+                _record_proxy_health(proxy_pool=proxy_pool, state=resumed_state, blocked=True, now_iso=manifest.created_at)
                 return RunResult(
                     exit_code=3,
                     accepted_count=resumed_state.accepted_count,
@@ -234,13 +237,14 @@ def resume_scrape(
                 completed_state.audit_rows,
                 review_context_rows=review_context_rows,
             )
+            _record_proxy_health(proxy_pool=proxy_pool, state=completed_state, blocked=False, now_iso=manifest.created_at)
             return RunResult(
                 exit_code=_completed_exit_code(completed_state.accepted_count),
                 accepted_count=completed_state.accepted_count,
                 blocked=False,
             )
 
-        return _run_scrape_from_state(
+        result = _run_scrape_from_state(
             manifest=manifest,
             groups=groups,
             run_dir=run_dir,
@@ -250,6 +254,8 @@ def resume_scrape(
             state=resumed_state,
             start_page=max(1, resumed_state.current_listing_page + 1),
         )
+        _record_proxy_health(proxy_pool=proxy_pool, state=store.load_state(), blocked=result.blocked, now_iso=manifest.created_at)
+        return result
     finally:
         proxy_pool.close()
 
@@ -707,6 +713,18 @@ def _with_proxy_state(state: RunState, proxy_pool: ProxyPool) -> RunState:
         current_proxy_key=proxy_pool.current_key(),
         block_events_on_current_proxy=proxy_pool.block_events_on_current,
     )
+
+
+def _record_proxy_health(*, proxy_pool: ProxyPool, state: RunState, blocked: bool, now_iso: str) -> None:
+    record_event = getattr(proxy_pool, "record_event", None)
+    if record_event is None:
+        return
+    if blocked:
+        record_event("captcha", now_iso=now_iso)
+    elif state.last_error:
+        record_event("timeout", now_iso=now_iso)
+    else:
+        record_event("success", now_iso=now_iso)
 
 
 def _write_outputs(
