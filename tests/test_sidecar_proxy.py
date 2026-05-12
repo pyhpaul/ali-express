@@ -1,0 +1,75 @@
+from types import SimpleNamespace
+
+from ali_mvp.sidecar_proxy import build_sidecar_config, start_sidecar_runtime
+from ali_mvp.v2rayn import V2RayNNode, V2RayNSource
+
+
+def test_build_sidecar_config_overrides_port_server_and_routing():
+    node = V2RayNNode(
+        index_id="node-a",
+        remarks="HK A",
+        address="1.1.1.1",
+        port=1111,
+        password="secret-a",
+        method="aes-256-gcm",
+        subid="sub-1",
+        sort_index=1,
+    )
+    base_config = {
+        "inbounds": [{"port": 10808}],
+        "outbounds": [{"settings": {"servers": []}}, {"tag": "direct"}, {"tag": "block"}],
+        "routing": {"domainStrategy": "AsIs", "rules": []},
+    }
+
+    config = build_sidecar_config(base_config, node=node, local_port=11081)
+
+    server = config["outbounds"][0]["settings"]["servers"][0]
+    assert config["inbounds"][0]["port"] == 11081
+    assert server["address"] == "1.1.1.1"
+    assert server["port"] == 1111
+    assert server["method"] == "aes-256-gcm"
+    assert config["routing"]["rules"][-1]["outboundTag"] == "proxy"
+
+
+def test_start_sidecar_runtime_filters_unhealthy_nodes(monkeypatch, tmp_path):
+    source = V2RayNSource(
+        root=tmp_path,
+        db_path=tmp_path / "guiConfigs" / "guiNDB.db",
+        base_config_path=tmp_path / "binConfigs" / "config.json",
+        xray_path=tmp_path / "bin" / "xray.exe",
+        asset_dir=tmp_path / "bin",
+        nodes=[
+            V2RayNNode("node-a", "HK A", "1.1.1.1", 1111, "secret-a", "aes-256-gcm", "sub-1", 1),
+            V2RayNNode("node-b", "TW B", "2.2.2.2", 2222, "secret-b", "aes-256-gcm", "sub-1", 2),
+        ],
+    )
+    source.base_config_path.parent.mkdir(parents=True, exist_ok=True)
+    source.xray_path.parent.mkdir(parents=True, exist_ok=True)
+    source.base_config_path.write_text(
+        '{"inbounds":[{"port":10808}],"outbounds":[{"settings":{"servers":[]}}, {"tag":"direct"}, {"tag":"block"}],"routing":{"domainStrategy":"AsIs","rules":[]}}',
+        encoding="utf-8",
+    )
+    source.xray_path.write_text("", encoding="utf-8")
+
+    started = []
+    monkeypatch.setattr(
+        "ali_mvp.sidecar_proxy._launch_process",
+        lambda **kwargs: started.append(kwargs["node"].index_id)
+        or SimpleNamespace(
+            pid=len(started),
+            poll=lambda: None,
+            terminate=lambda: None,
+            kill=lambda: None,
+            wait=lambda timeout=None: 0,
+        ),
+    )
+    monkeypatch.setattr("ali_mvp.sidecar_proxy._wait_for_port", lambda host, port, timeout: True)
+    monkeypatch.setattr(
+        "ali_mvp.sidecar_proxy._probe_tls_over_socks",
+        lambda proxy_url, host, timeout: proxy_url.endswith("11081"),
+    )
+
+    runtime = start_sidecar_runtime(source=source, runtime_dir=tmp_path / "runtime", start_port=11081)
+
+    assert started == ["node-a", "node-b"]
+    assert [endpoint.key for endpoint in runtime.healthy_endpoints()] == ["node-a"]
