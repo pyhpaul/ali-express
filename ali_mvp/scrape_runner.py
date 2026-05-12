@@ -15,7 +15,7 @@ from .browser import (
 from .extractor import normalize_products
 from .filtering import FilterGroup, filter_products, load_filter_groups, prefilter_listing_products
 from .output import REVIEW_FIELDS, write_dict_csv, write_filter_audit_csv, write_products_csv, write_rank_csv
-from .proxy_pool import ProxyPool
+from .proxy_pool import NoHealthyProxyError, ProxyPool
 from .review import build_review_rows
 from .run_state import RunManifest, RunState, RunStateStore
 from .scoring import ProductRecord, aggregate_rank
@@ -31,31 +31,37 @@ class RunResult:
 def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir: Path) -> RunResult:
     store = RunStateStore(run_dir)
     store.save_manifest(manifest)
-    proxy_pool = ProxyPool.from_sources(
-        proxy=manifest.proxy,
-        proxy_file=manifest.proxy_file,
-        max_blocks_per_proxy=manifest.max_blocks_per_proxy,
-    )
+    try:
+        proxy_pool = ProxyPool.from_manifest(manifest=manifest, run_dir=run_dir)
+    except NoHealthyProxyError as error:
+        failed_state = RunState(status="failed", last_error=str(error))
+        store.save_state(failed_state)
+        store.save_summary(failed_state)
+        _write_outputs(run_dir, [], [])
+        return RunResult(exit_code=5, accepted_count=0)
 
-    page = open_listing_page(
-        manifest.url,
-        user_data_dir=manifest.user_data_dir,
-        port=manifest.port,
-        browser_hardening=manifest.browser_hardening,
-        proxy=proxy_pool.current(),
-        user_agent=manifest.user_agent,
-        accept_language=manifest.accept_language,
-    )
-    return _run_scrape_from_state(
-        manifest=manifest,
-        groups=groups,
-        run_dir=run_dir,
-        store=store,
-        proxy_pool=proxy_pool,
-        page=page,
-        state=RunState(status="running"),
-        start_page=1,
-    )
+    try:
+        page = open_listing_page(
+            manifest.url,
+            user_data_dir=manifest.user_data_dir,
+            port=manifest.port,
+            browser_hardening=manifest.browser_hardening,
+            proxy=proxy_pool.current(),
+            user_agent=manifest.user_agent,
+            accept_language=manifest.accept_language,
+        )
+        return _run_scrape_from_state(
+            manifest=manifest,
+            groups=groups,
+            run_dir=run_dir,
+            store=store,
+            proxy_pool=proxy_pool,
+            page=page,
+            state=RunState(status="running"),
+            start_page=1,
+        )
+    finally:
+        proxy_pool.close()
 
 
 def resume_scrape(
@@ -71,16 +77,7 @@ def resume_scrape(
     manifest = store.load_manifest()
     state = store.load_state()
 
-    if details_only and not state.pending_detail_queue:
-        if state.status == "completed":
-            store.save_state(state)
-            store.save_summary(state)
-            _write_outputs(run_dir, state.accepted_products, state.audit_rows)
-            return RunResult(
-                exit_code=0,
-                accepted_count=state.accepted_count,
-                blocked=False,
-            )
+    if details_only and not state.pending_detail_queue and state.status != "completed":
         failed_details_only_state = replace(
             state,
             last_error="details_only_requested_without_pending_details",
@@ -99,66 +96,92 @@ def resume_scrape(
     effective_user_agent = user_agent_override or manifest.user_agent
     effective_accept_language = accept_language_override or manifest.accept_language
     groups = load_filter_groups(manifest.blacklist_file, manifest.reject_keyword)
-    proxy_pool = ProxyPool.from_sources(
-        proxy=effective_proxy,
-        proxy_file=effective_proxy_file,
-        max_blocks_per_proxy=manifest.max_blocks_per_proxy,
-    )
-    if proxy_pool.proxies:
-        proxy_pool.current_index = min(state.current_proxy_index, len(proxy_pool.proxies) - 1)
-        proxy_pool.block_events_on_current = state.block_events_on_current_proxy
-
-    page = open_listing_page(
-        manifest.url,
-        user_data_dir=manifest.user_data_dir,
-        port=manifest.port,
-        browser_hardening=manifest.browser_hardening,
-        proxy=proxy_pool.current(),
-        user_agent=effective_user_agent,
-        accept_language=effective_accept_language,
-    )
-
-    resumed_state = state
-    pending_queue = list(state.pending_detail_queue)
-    if pending_queue:
-        resumed_state, blocked = _resume_pending_details(
-            state=resumed_state,
-            pending_queue=pending_queue,
-            page=page,
-            manifest=manifest,
-            groups=groups,
+    proxy_manifest = manifest
+    if (
+        effective_proxy != manifest.proxy
+        or effective_proxy_file != manifest.proxy_file
+        or effective_user_agent != manifest.user_agent
+        or effective_accept_language != manifest.accept_language
+    ):
+        proxy_manifest = replace(
+            manifest,
+            proxy=effective_proxy,
+            proxy_file=effective_proxy_file,
+            user_agent=effective_user_agent,
+            accept_language=effective_accept_language,
         )
-        store.save_state(resumed_state)
-        store.save_summary(resumed_state)
-        _write_outputs(run_dir, resumed_state.accepted_products, resumed_state.audit_rows)
-        if blocked:
+
+    proxy_pool = ProxyPool.from_manifest(manifest=proxy_manifest, run_dir=run_dir)
+    proxy_pool.restore_selection(
+        current_key=state.current_proxy_key,
+        current_index=state.current_proxy_index,
+        block_events=state.block_events_on_current_proxy,
+    )
+
+    try:
+        if details_only and not state.pending_detail_queue and state.status == "completed":
+            store.save_state(state)
+            store.save_summary(state)
+            _write_outputs(run_dir, state.accepted_products, state.audit_rows)
             return RunResult(
-                exit_code=3,
-                accepted_count=resumed_state.accepted_count,
-                blocked=True,
+                exit_code=0,
+                accepted_count=state.accepted_count,
+                blocked=False,
             )
 
-    if details_only:
-        completed_state = replace(resumed_state, status="completed")
-        store.save_state(completed_state)
-        store.save_summary(completed_state)
-        _write_outputs(run_dir, completed_state.accepted_products, completed_state.audit_rows)
-        return RunResult(
-            exit_code=0,
-            accepted_count=completed_state.accepted_count,
-            blocked=False,
+        page = open_listing_page(
+            manifest.url,
+            user_data_dir=manifest.user_data_dir,
+            port=manifest.port,
+            browser_hardening=manifest.browser_hardening,
+            proxy=proxy_pool.current(),
+            user_agent=effective_user_agent,
+            accept_language=effective_accept_language,
         )
 
-    return _run_scrape_from_state(
-        manifest=manifest,
-        groups=groups,
-        run_dir=run_dir,
-        store=store,
-        proxy_pool=proxy_pool,
-        page=page,
-        state=resumed_state,
-        start_page=max(1, resumed_state.current_listing_page + 1),
-    )
+        resumed_state = state
+        pending_queue = list(state.pending_detail_queue)
+        if pending_queue:
+            resumed_state, blocked = _resume_pending_details(
+                state=resumed_state,
+                pending_queue=pending_queue,
+                page=page,
+                manifest=manifest,
+                groups=groups,
+            )
+            store.save_state(resumed_state)
+            store.save_summary(resumed_state)
+            _write_outputs(run_dir, resumed_state.accepted_products, resumed_state.audit_rows)
+            if blocked:
+                return RunResult(
+                    exit_code=3,
+                    accepted_count=resumed_state.accepted_count,
+                    blocked=True,
+                )
+
+        if details_only:
+            completed_state = replace(resumed_state, status="completed")
+            store.save_state(completed_state)
+            store.save_summary(completed_state)
+            _write_outputs(run_dir, completed_state.accepted_products, completed_state.audit_rows)
+            return RunResult(
+                exit_code=0,
+                accepted_count=completed_state.accepted_count,
+                blocked=False,
+            )
+
+        return _run_scrape_from_state(
+            manifest=manifest,
+            groups=groups,
+            run_dir=run_dir,
+            store=store,
+            proxy_pool=proxy_pool,
+            page=page,
+            state=resumed_state,
+            start_page=max(1, resumed_state.current_listing_page + 1),
+        )
+    finally:
+        proxy_pool.close()
 
 
 def _resume_pending_details(
@@ -336,6 +359,7 @@ def _run_scrape_from_state(
             audit_rows=list(audit_rows),
             pending_detail_queue=pending_detail_queue,
             current_proxy_index=proxy_pool.current_index,
+            current_proxy_key=proxy_pool.current_key(),
             block_events_on_current_proxy=proxy_pool.block_events_on_current,
             last_block_reason=last_block_reason,
             last_blocked_url=last_blocked_url,
@@ -345,6 +369,7 @@ def _run_scrape_from_state(
             checkpoint_state = replace(
                 checkpoint_state,
                 current_proxy_index=proxy_pool.current_index,
+                current_proxy_key=proxy_pool.current_key(),
                 block_events_on_current_proxy=proxy_pool.block_events_on_current,
             )
         store.save_state(checkpoint_state)
@@ -374,6 +399,7 @@ def _run_scrape_from_state(
         audit_rows=list(audit_rows),
         pending_detail_queue=[],
         current_proxy_index=proxy_pool.current_index,
+        current_proxy_key=proxy_pool.current_key(),
         block_events_on_current_proxy=proxy_pool.block_events_on_current,
         last_block_reason="",
         last_blocked_url="",

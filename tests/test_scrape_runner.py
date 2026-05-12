@@ -118,6 +118,85 @@ def test_run_new_scrape_marks_blocked_run_and_writes_outputs(tmp_path, monkeypat
     assert (tmp_path / "category_rank.csv").exists()
 
 
+def test_run_new_scrape_fails_when_v2rayn_provider_has_no_healthy_proxy(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.proxy_pool import NoHealthyProxyError
+    from ali_mvp.run_state import RunStateStore
+
+    manifest = RunManifest(
+        source_type="keyword",
+        source_value="pump part",
+        url="https://www.aliexpress.com/wholesale?SearchText=pump+part",
+        max_items=20,
+        pages=None,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        blacklist_file=None,
+        proxy_provider="v2rayn",
+        v2rayn_dir="C:/Users/test/v2rayN",
+    )
+    monkeypatch.setattr(
+        "ali_mvp.scrape_runner.ProxyPool.from_manifest",
+        lambda **kwargs: (_ for _ in ()).throw(NoHealthyProxyError("no healthy proxy")),
+    )
+
+    result = scrape_runner.run_new_scrape(manifest=manifest, groups=[], run_dir=tmp_path)
+    state = RunStateStore(tmp_path).load_state()
+
+    assert result.exit_code == 5
+    assert state.status == "failed"
+    assert state.last_error == "no healthy proxy"
+
+
+def test_resume_scrape_restores_proxy_key_and_closes_runtime(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunState, RunStateStore
+
+    store = RunStateStore(tmp_path)
+    manifest = RunManifest(
+        source_type="keyword",
+        source_value="pump part",
+        url="https://www.aliexpress.com/wholesale?SearchText=pump+part",
+        max_items=20,
+        pages=None,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        blacklist_file=None,
+        proxy_provider="v2rayn",
+        v2rayn_dir="C:/Users/test/v2rayN",
+    )
+    store.save_manifest(manifest)
+    store.save_state(RunState(status="completed", current_proxy_index=1, current_proxy_key="node-b"))
+
+    seen = {"restore": None, "closed": False}
+
+    class FakePool:
+        def __init__(self):
+            self.current_index = 0
+            self.block_events_on_current = 0
+
+        def restore_selection(self, *, current_key, current_index, block_events):
+            seen["restore"] = (current_key, current_index, block_events)
+
+        def current(self):
+            return "socks5://127.0.0.1:11082"
+
+        def close(self):
+            seen["closed"] = True
+
+    monkeypatch.setattr("ali_mvp.scrape_runner.ProxyPool.from_manifest", lambda **kwargs: FakePool())
+
+    result = scrape_runner.resume_scrape(tmp_path, details_only=True)
+
+    assert result.exit_code == 0
+    assert seen["restore"] == ("node-b", 1, 0)
+    assert seen["closed"] is True
+
+
 def test_run_new_scrape_persists_proxy_progress_and_browser_identity_on_block(tmp_path, monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
     proxy_file = tmp_path / "proxies.txt"
