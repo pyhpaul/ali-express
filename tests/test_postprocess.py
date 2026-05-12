@@ -155,6 +155,44 @@ def test_run_postprocess_for_dir_prefers_existing_review_rows_for_rejected_detai
     assert audit_zh[0]["reason_zh"] == "点火控制类"
 
 
+def test_run_postprocess_for_dir_reorders_existing_review_rows_to_match_audit_rows(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "products.csv").write_text(
+        "source_type,source_value,title,price,sold_count,rating,review_count,product_url,search_card_url,image_url,entry_type,is_promoted,promo_channel,promotion_text,promo_landing_url,shop_name,shipping_text,detail_rating,detail_review_count,breadcrumb,attributes_text,description_text,detail_status,scraped_at\n"
+        "keyword,home appliance accessories,Shock pad,$1.20,0,0,0,https://example.test/item/1,https://example.test/card/1,https://example.test/item/1.jpg,item_card,False,,,,Store A,Free shipping,0,0,,\"{\"\"Type\"\":\"\"Pad\"\"}\",Accessory,ok,2026-05-11T00:00:00Z\n",
+        encoding="utf-8-sig",
+    )
+    (run_dir / "products_filter_audit.csv").write_text(
+        "source_type,source_value,title,product_url,filter_decision,filter_stage,reject_groups,reject_terms,reject_fields,warning_groups,warning_terms,warning_fields\n"
+        "keyword,home appliance accessories,Shock pad,https://example.test/item/1,accepted,accepted,,,,,,\n"
+        "keyword,home appliance accessories,Pulse igniter,https://example.test/item/3,rejected,detail_post_enrich,ignition_control,igniter,attributes_text,,,\n",
+        encoding="utf-8-sig",
+    )
+    (run_dir / "products_review.csv").write_text(
+        "source_type,source_value,title,product_url,image_url,price,search_card_url,entry_type,is_promoted,promo_channel,promotion_text,shop_name,shipping_text,attributes_text,description_text,detail_status,filter_decision,filter_stage,reject_groups,reject_terms,reject_fields,warning_groups,warning_terms,warning_fields\n"
+        "keyword,home appliance accessories,Pulse igniter,https://example.test/item/3,https://example.test/item/3.jpg,$9.90,https://example.test/card/3,item_card,False,,,Store C,Fast delivery,\"{\"\"Mode\"\":\"\"Pulse\"\"}\",Ignition module,detail_enriched,rejected,detail_post_enrich,ignition_control,igniter,attributes_text,,,\n"
+        "keyword,home appliance accessories,Shock pad,https://example.test/item/1,https://example.test/item/1.jpg,$1.20,https://example.test/card/1,item_card,False,,,Store A,Free shipping,\"{\"\"Type\"\":\"\"Pad\"\"}\",Accessory,ok,accepted,accepted,,,,,,\n",
+        encoding="utf-8-sig",
+    )
+
+    run_postprocess_for_dir(run_dir, translator=lambda text: text)
+
+    review_rows = read_csv_rows(run_dir / "products_review.csv")
+    audit_zh = read_csv_rows(run_dir / "products_filter_audit_zh.csv")
+
+    assert [row["product_url"] for row in review_rows] == [
+        "https://example.test/item/1",
+        "https://example.test/item/3",
+    ]
+    assert review_rows[0]["filter_decision"] == "accepted"
+    assert review_rows[1]["filter_decision"] == "rejected"
+    assert review_rows[1]["attributes_text"] == '{"Mode":"Pulse"}'
+    assert audit_zh[0]["decision_label"] == "建议入库"
+    assert audit_zh[1]["decision_label"] == "拒绝入库"
+    assert audit_zh[1]["reason_zh"] == "点火控制类"
+
+
 def test_run_postprocess_for_dir_ignores_identity_cache_when_namespace_changes(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()

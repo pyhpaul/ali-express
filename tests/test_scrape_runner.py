@@ -1328,6 +1328,66 @@ def test_resume_scrape_details_only_short_circuits_completed_run_without_browser
     assert summary["resume_recommended"] is False
 
 
+def test_resume_scrape_details_only_short_circuits_completed_zero_accept_run_without_browser(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunState, RunStateStore
+
+    manifest = _manifest(tmp_path, pages=2, enrich_detail=True)
+    state = RunState(
+        status="completed",
+        current_listing_page=2,
+        raw_products_count=1,
+        normalized_count=1,
+        accepted_count=0,
+        seen_product_keys=["https://www.aliexpress.com/item/2203.html"],
+        accepted_products=[],
+        audit_rows=[
+            {
+                "source_type": "keyword",
+                "source_value": "women dress",
+                "title": "Dress Reject",
+                "product_url": "https://www.aliexpress.com/item/2203.html",
+                "filter_decision": "rejected",
+                "filter_stage": "detail_post_enrich",
+                "reject_groups": "manual_blacklist",
+                "reject_terms": "wool",
+                "reject_fields": "attributes_text",
+                "warning_groups": "",
+                "warning_terms": "",
+                "warning_fields": "",
+            }
+        ],
+        pending_detail_queue=[],
+        last_block_reason="",
+        last_blocked_url="",
+    )
+    store = RunStateStore(tmp_path)
+    store.save_manifest(manifest)
+    store.save_state(state)
+    store.save_summary(state)
+
+    opened = {"value": False}
+
+    def fake_open_listing_page(*args, **kwargs):
+        opened["value"] = True
+        return object()
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", fake_open_listing_page)
+
+    result = scrape_runner.resume_scrape(tmp_path, details_only=True)
+
+    resumed_state = store.load_state()
+    summary = store.load_summary()
+
+    assert result == scrape_runner.RunResult(exit_code=2, accepted_count=0, blocked=False)
+    assert opened["value"] is False
+    assert resumed_state.status == "completed"
+    assert resumed_state.pending_detail_queue == []
+    assert resumed_state.accepted_count == 0
+    assert summary["status"] == "completed"
+    assert summary["resume_recommended"] is False
+
+
 def test_resume_scrape_applies_proxy_and_identity_overrides_to_browser_open(tmp_path, monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
     from ali_mvp.run_state import RunState, RunStateStore

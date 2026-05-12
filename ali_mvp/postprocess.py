@@ -11,7 +11,7 @@ from .output import (
     write_dict_csv,
 )
 from .reporting import render_report_html
-from .review import build_review_rows, enrich_review_rows_with_zh
+from .review import PRODUCT_CONTEXT_FIELDS, build_review_rows, enrich_review_rows_with_zh
 from .translation import build_reason_zh, summarize_attributes_text, translate_texts
 
 
@@ -104,12 +104,44 @@ def _load_review_rows(
     products: list[dict[str, str]],
     audit_rows: list[dict[str, str]],
 ) -> list[dict[str, str]]:
+    base_review_rows = build_review_rows(products, audit_rows)
     review_path = run_dir / "products_review.csv"
-    if review_path.exists():
-        existing_review_rows = read_csv_rows(review_path)
-        if len(existing_review_rows) == len(audit_rows):
-            return existing_review_rows
-    return build_review_rows(products, audit_rows)
+    if not review_path.exists():
+        return base_review_rows
+
+    existing_review_rows = read_csv_rows(review_path)
+    existing_by_key = _index_review_rows(existing_review_rows)
+    if existing_by_key is None:
+        return base_review_rows
+
+    merged_rows: list[dict[str, str]] = []
+    for row in base_review_rows:
+        merged = dict(row)
+        existing = existing_by_key.get(_review_row_key(row))
+        if existing is not None:
+            for field in PRODUCT_CONTEXT_FIELDS:
+                if not merged.get(field) and existing.get(field):
+                    merged[field] = existing[field]
+        merged_rows.append(merged)
+    return merged_rows
+
+
+def _index_review_rows(rows: list[dict[str, str]]) -> dict[tuple[str, str, str], dict[str, str]] | None:
+    index: dict[tuple[str, str, str], dict[str, str]] = {}
+    for row in rows:
+        key = _review_row_key(row)
+        if not key[0] or key in index:
+            return None
+        index[key] = row
+    return index
+
+
+def _review_row_key(row: dict[str, str]) -> tuple[str, str, str]:
+    return (
+        row.get("product_url", ""),
+        row.get("filter_decision", ""),
+        row.get("filter_stage", ""),
+    )
 
 
 def _build_products_zh_rows(
