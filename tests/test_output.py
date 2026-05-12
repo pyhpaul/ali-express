@@ -1,7 +1,152 @@
 import csv
 
-from ali_mvp.output import write_filter_audit_csv, write_products_csv, write_rank_csv
+import pytest
+
+from ali_mvp.output import (
+    FILTER_AUDIT_FIELDS,
+    FILTER_AUDIT_ZH_FIELDS,
+    PRODUCT_ZH_FIELDS,
+    REVIEW_FIELDS,
+    REVIEW_ONLY_FIELDS,
+    read_csv_rows,
+    write_dict_csv,
+    write_filter_audit_csv,
+    write_products_csv,
+    write_rank_csv,
+)
 from ali_mvp.scoring import ProductRecord, RankRecord
+
+
+def test_read_csv_rows_round_trips_written_audit(tmp_path):
+    path = tmp_path / "products_filter_audit.csv"
+    rows = [{"source_type": "keyword", "source_value": "x", "title": "A", "product_url": "u"}]
+
+    write_dict_csv(path, ["source_type", "source_value", "title", "product_url"], rows)
+    loaded = read_csv_rows(path)
+
+    assert loaded == [{"source_type": "keyword", "source_value": "x", "title": "A", "product_url": "u"}]
+
+
+def test_review_fields_match_expected_columns_and_order():
+    assert REVIEW_FIELDS == [
+        "source_type",
+        "source_value",
+        "title",
+        "product_url",
+        "image_url",
+        "price",
+        "search_card_url",
+        "entry_type",
+        "is_promoted",
+        "promo_channel",
+        "promotion_text",
+        "shop_name",
+        "shipping_text",
+        "attributes_text",
+        "description_text",
+        "detail_status",
+        "filter_decision",
+        "filter_stage",
+        "reject_groups",
+        "reject_terms",
+        "reject_fields",
+        "warning_groups",
+        "warning_terms",
+        "warning_fields",
+    ]
+
+
+def test_product_zh_fields_match_expected_columns_and_order():
+    assert PRODUCT_ZH_FIELDS == [
+        "source_type",
+        "source_value",
+        "title",
+        "price",
+        "sold_count",
+        "rating",
+        "review_count",
+        "product_url",
+        "search_card_url",
+        "image_url",
+        "entry_type",
+        "is_promoted",
+        "promo_channel",
+        "promotion_text",
+        "promo_landing_url",
+        "shop_name",
+        "shipping_text",
+        "detail_rating",
+        "detail_review_count",
+        "breadcrumb",
+        "attributes_text",
+        "description_text",
+        "detail_status",
+        "scraped_at",
+        "title_zh",
+        "shop_name_zh",
+        "promotion_text_zh",
+        "attributes_summary",
+        "attributes_summary_zh",
+        "decision_label",
+        "stage_label",
+        "review_note",
+    ]
+
+
+def test_filter_audit_zh_fields_match_expected_columns_and_order():
+    assert FILTER_AUDIT_ZH_FIELDS == [
+        "source_type",
+        "source_value",
+        "title",
+        "product_url",
+        "filter_decision",
+        "filter_stage",
+        "reject_groups",
+        "reject_terms",
+        "reject_fields",
+        "warning_groups",
+        "warning_terms",
+        "warning_fields",
+        "filter_decision_zh",
+        "filter_stage_zh",
+        "reject_groups_zh",
+        "reject_terms_zh",
+        "warning_groups_zh",
+        "warning_terms_zh",
+        "reason_zh",
+        "decision_label",
+        "stage_label",
+        "review_note",
+    ]
+
+
+def test_review_only_fields_match_expected_columns_and_order():
+    assert REVIEW_ONLY_FIELDS == [
+        "source_type",
+        "source_value",
+        "title",
+        "title_zh",
+        "product_url",
+        "image_url",
+        "price",
+        "entry_type",
+        "shop_name",
+        "shop_name_zh",
+        "promotion_text",
+        "promotion_text_zh",
+        "attributes_summary",
+        "attributes_summary_zh",
+        "decision_label",
+        "stage_label",
+        "review_note",
+    ]
+
+
+def test_write_dict_csv_rejects_extra_keys(tmp_path):
+    path = tmp_path / "audit.csv"
+
+    with pytest.raises(ValueError, match="unexpected CSV columns: extra"):
+        write_dict_csv(path, ["source_type"], [{"source_type": "keyword", "extra": "boom"}])
 
 
 def test_write_products_csv_writes_header_and_rows(tmp_path):
@@ -115,16 +260,6 @@ def test_write_filter_audit_csv_writes_expected_columns(tmp_path):
         {
             "source_type": "keyword",
             "source_value": "home appliance accessories",
-            "title": "Battery charger board",
-            "product_url": "https://example.test/item",
-            "filter_decision": "rejected",
-            "filter_stage": "listing_title",
-            "reject_groups": "electrical_power",
-            "reject_terms": "battery",
-            "reject_fields": "title",
-            "warning_groups": "",
-            "warning_terms": "",
-            "warning_fields": "",
         }
     ]
 
@@ -133,7 +268,8 @@ def test_write_filter_audit_csv_writes_expected_columns(tmp_path):
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         written_rows = list(csv.DictReader(handle))
 
-    assert written_rows[0]["filter_stage"] == "listing_title"
-    assert written_rows[0]["filter_decision"] == "rejected"
-    assert written_rows[0]["reject_terms"] == "battery"
-    assert written_rows[0]["warning_terms"] == ""
+    assert written_rows[0]["source_type"] == "keyword"
+    assert written_rows[0]["source_value"] == "home appliance accessories"
+    for field in FILTER_AUDIT_FIELDS:
+        if field not in {"source_type", "source_value"}:
+            assert written_rows[0][field] == ""

@@ -7,19 +7,9 @@ import re
 from urllib.parse import quote_plus
 from urllib.parse import urlparse
 
-from .browser import (
-    _attach_listing_context,
-    advance_listing_page,
-    collect_listing_page_products,
-    collect_raw_products,
-    dedupe_listing_products,
-    enrich_listing_products,
-    open_listing_page,
-)
-from .extractor import normalize_products
-from .filtering import FilterGroup, filter_products, load_filter_groups, prefilter_listing_products
-from .output import write_filter_audit_csv, write_products_csv, write_rank_csv
-from .scoring import aggregate_rank
+from .filtering import load_filter_groups
+from . import scrape_runner
+from .run_state import RunManifest, RunStateStore
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,7 +49,78 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Repeatable extra blacklist term added for this run.",
     )
+    scrape.add_argument(
+        "--browser-hardening",
+        choices=("off", "minimal"),
+        default="minimal",
+        help="Apply optional browser pacing/stealth hardening.",
+    )
+    scrape.add_argument(
+        "--proxy-provider",
+        choices=("manual", "v2rayn"),
+        default="manual",
+        help="Proxy provider: existing manual proxies or v2rayN sidecar pool.",
+    )
+    scrape.add_argument(
+        "--v2rayn-dir",
+        default="",
+        help="Root directory of the local v2rayN installation when --proxy-provider v2rayn is used.",
+    )
+    scrape.add_argument("--proxy", default="", help="Single proxy URL for this run.")
+    scrape.add_argument("--proxy-file", default="", help="Text file with one proxy per line.")
+    scrape.add_argument(
+        "--max-blocks-per-proxy",
+        type=int,
+        default=2,
+        help="Rotate to the next proxy after this many block events.",
+    )
+    scrape.add_argument("--user-agent", default="", help="Optional fixed browser user agent for the full run.")
+    scrape.add_argument(
+        "--accept-language",
+        default="en-US,en;q=0.9",
+        help="Fixed browser Accept-Language value for the full run.",
+    )
     scrape.set_defaults(func=run_scrape)
+    postprocess = subparsers.add_parser(
+        "postprocess",
+        help="Generate zh outputs and review report from an existing run.",
+    )
+    postprocess.add_argument(
+        "--run-dir",
+        required=True,
+        help="Existing scrape run directory containing products.csv outputs.",
+    )
+    postprocess.add_argument(
+        "--translator",
+        choices=("identity", "mymemory"),
+        default="identity",
+        help="Translation backend for zh outputs.",
+    )
+    postprocess.add_argument(
+        "--translator-email",
+        default="",
+        help="Optional email sent to MyMemory as the de parameter.",
+    )
+    postprocess.set_defaults(func=run_postprocess)
+    resume = subparsers.add_parser(
+        "resume",
+        help="Resume a previously blocked scrape run.",
+    )
+    resume.add_argument(
+        "--run-dir",
+        required=True,
+        help="Existing scrape run directory containing run manifest/state.",
+    )
+    resume.add_argument(
+        "--details-only",
+        action="store_true",
+        help="Only resume pending detail enrichment without continuing listing collection.",
+    )
+    resume.add_argument("--proxy", default="", help="Optional proxy override for the resumed run.")
+    resume.add_argument("--proxy-file", default="", help="Optional proxy list override for the resumed run.")
+    resume.add_argument("--user-agent", default="", help="Optional fixed browser user agent override.")
+    resume.add_argument("--accept-language", default="", help="Optional Accept-Language override.")
+    resume.set_defaults(func=run_resume)
     return parser
 
 
@@ -69,138 +130,96 @@ def main(argv: list[str] | None = None) -> int:
     return args.func(args)
 
 
-def _collect_products_with_blacklist(
-    *,
-    url: str,
-    max_items: int,
-    source_type: str,
-    source_value: str,
-    scraped_at: str,
-    groups: list[FilterGroup],
-    user_data_dir: str,
-    port: int,
-    enrich_detail: bool,
-    pages: int | None,
-) -> tuple[list[object], list[dict[str, str]], int, int]:
-    page = open_listing_page(url, user_data_dir=user_data_dir, port=port)
-    accepted_products = []
-    audit_rows: list[dict[str, str]] = []
-    seen_keys: set[str] = set()
-    current_page = 1
-    raw_products_count = 0
-    normalized_count = 0
+def run_postprocess(args: argparse.Namespace) -> int:
+    from .postprocess import run_postprocess_for_dir
+    from .translation import build_translation_cache_namespace, build_translator
 
-    while len(accepted_products) < max_items:
-        current_raw = collect_listing_page_products(page)
-        page_products = dedupe_listing_products(current_raw, seen_keys)
-        raw_products_count += len(page_products)
-        listing_survivors, listing_audit = prefilter_listing_products(
-            page_products,
-            groups,
-            source_type=source_type,
-            source_value=source_value,
-        )
-        audit_rows.extend(listing_audit)
+    run_postprocess_for_dir(
+        Path(args.run_dir),
+        translator=build_translator(args.translator, email=args.translator_email),
+        translation_cache_namespace=build_translation_cache_namespace(args.translator),
+    )
+    print(f"Wrote: {Path(args.run_dir) / 'products_review.csv'}")
+    print(f"Wrote: {Path(args.run_dir) / 'products_zh.csv'}")
+    print(f"Wrote: {Path(args.run_dir) / 'products_filter_audit_zh.csv'}")
+    print(f"Wrote: {Path(args.run_dir) / 'review_only.csv'}")
+    print(f"Wrote: {Path(args.run_dir) / 'products_report.html'}")
+    return 0
 
-        if enrich_detail and listing_survivors:
-            _attach_listing_context(
-                listing_survivors,
-                base_url=url,
-                page_url=str(getattr(page, "url", "") or url),
-                page_number=current_page,
-            )
-            enrich_listing_products(page, listing_survivors)
 
-        normalized = normalize_products(
-            listing_survivors,
-            source_type=source_type,
-            source_value=source_value,
-            scraped_at=scraped_at,
-        )
-        normalized_count += len(normalized)
-        page_accepted, page_audit = filter_products(normalized, groups)
-
-        remaining = max_items - len(accepted_products)
-        accepted_products.extend(page_accepted[:remaining])
-
-        accepted_audit_count = 0
-        for row in page_audit:
-            if row["filter_decision"] == "accepted":
-                if accepted_audit_count >= remaining:
-                    continue
-                accepted_audit_count += 1
-            audit_rows.append(row)
-
-        if len(accepted_products) >= max_items:
-            break
-        if pages is not None and current_page >= pages:
-            break
-        next_page = current_page + 1
-        if not advance_listing_page(page, next_page):
-            break
-        current_page = next_page
-
-    return accepted_products, audit_rows, raw_products_count, normalized_count
+def run_resume(args: argparse.Namespace) -> int:
+    result = scrape_runner.resume_scrape(
+        Path(args.run_dir),
+        details_only=args.details_only,
+        proxy_override=args.proxy,
+        proxy_file_override=args.proxy_file,
+        user_agent_override=args.user_agent,
+        accept_language_override=args.accept_language,
+    )
+    print(f"Resumed run: {Path(args.run_dir)}")
+    print(f"Accepted products: {result.accepted_count}")
+    return result.exit_code
 
 
 def run_scrape(args: argparse.Namespace) -> int:
     source_type, source_value, url = _resolve_source(args)
+    browser_hardening = getattr(args, "browser_hardening", "minimal")
+    proxy_provider = getattr(args, "proxy_provider", "manual")
+    v2rayn_dir = getattr(args, "v2rayn_dir", "")
     if args.max_items < 1:
         raise SystemExit("--max-items must be greater than 0")
     if args.pages is not None and args.pages < 1:
         raise SystemExit("--pages must be greater than 0")
+    if proxy_provider == "v2rayn" and not v2rayn_dir:
+        raise SystemExit("--v2rayn-dir is required when --proxy-provider v2rayn")
+    if proxy_provider != "manual" and (args.proxy or args.proxy_file):
+        raise SystemExit("--proxy and --proxy-file are only supported with --proxy-provider manual")
 
     run_at = datetime.now().replace(microsecond=0)
     scraped_at = run_at.astimezone(timezone.utc).isoformat()
+    run_dir = build_output_dir(Path(args.output_dir), source_type=source_type, source_value=source_value, run_at=run_at)
+    manifest = RunManifest(
+        source_type=source_type,
+        source_value=source_value,
+        url=url,
+        max_items=args.max_items,
+        pages=args.pages,
+        output_dir=str(run_dir),
+        user_data_dir=args.user_data_dir,
+        port=args.port,
+        enrich_detail=args.enrich_detail,
+        blacklist_file=args.blacklist_file,
+        reject_keyword=list(args.reject_keyword),
+        browser_hardening=browser_hardening,
+        proxy_provider=proxy_provider,
+        v2rayn_dir=v2rayn_dir,
+        proxy=args.proxy,
+        proxy_file=args.proxy_file,
+        max_blocks_per_proxy=args.max_blocks_per_proxy,
+        user_agent=args.user_agent,
+        accept_language=args.accept_language,
+        created_at=scraped_at,
+    )
     groups = load_filter_groups(args.blacklist_file, args.reject_keyword)
 
-    if groups:
-        accepted_products, audit_rows, raw_products_count, normalized_count = _collect_products_with_blacklist(
-            url=url,
-            max_items=args.max_items,
-            source_type=source_type,
-            source_value=source_value,
-            scraped_at=scraped_at,
-            groups=groups,
-            user_data_dir=args.user_data_dir,
-            port=args.port,
-            enrich_detail=args.enrich_detail,
-            pages=args.pages,
-        )
-    else:
-        raw_products = collect_raw_products(
-            url,
-            args.max_items,
-            user_data_dir=args.user_data_dir,
-            port=args.port,
-            enrich_detail=args.enrich_detail,
-            pages=args.pages,
-        )
-        products = normalize_products(
-            raw_products,
-            source_type=source_type,
-            source_value=source_value,
-            scraped_at=scraped_at,
-        )
-        accepted_products, audit_rows = filter_products(products, groups)
-        raw_products_count = len(raw_products)
-        normalized_count = len(products)
+    result = scrape_runner.run_new_scrape(
+        manifest=manifest,
+        groups=groups,
+        run_dir=run_dir,
+    )
 
-    output_dir = build_output_dir(Path(args.output_dir), source_type=source_type, source_value=source_value, run_at=run_at)
-    write_products_csv(output_dir / "products.csv", accepted_products)
-    write_filter_audit_csv(output_dir / "products_filter_audit.csv", audit_rows)
-    write_rank_csv(output_dir / "category_rank.csv", aggregate_rank(accepted_products))
-
-    print(f"Scraped raw items: {raw_products_count}")
-    print(f"Normalized products: {normalized_count}")
-    print(f"Accepted products: {len(accepted_products)}")
-    print(f"Wrote: {output_dir / 'products.csv'}")
-    print(f"Wrote: {output_dir / 'products_filter_audit.csv'}")
-    print(f"Wrote: {output_dir / 'category_rank.csv'}")
-    if not accepted_products:
+    state = _load_run_state_if_present(run_dir)
+    if state is not None:
+        print(f"Scraped raw items: {state.raw_products_count}")
+        print(f"Normalized products: {state.normalized_count}")
+    print(f"Accepted products: {result.accepted_count}")
+    print(f"Wrote: {run_dir / 'products.csv'}")
+    print(f"Wrote: {run_dir / 'products_filter_audit.csv'}")
+    print(f"Wrote: {run_dir / 'products_review.csv'}")
+    print(f"Wrote: {run_dir / 'category_rank.csv'}")
+    if result.exit_code == 2:
         print("No accepted products extracted. Check login state, CAPTCHA, selector changes, or blacklist rules.")
-        return 2
-    return 0
+    return result.exit_code
 
 
 def _build_search_url(keyword: str) -> str:
@@ -213,6 +232,13 @@ def _resolve_source(args: argparse.Namespace) -> tuple[str, str, str]:
     if args.category_url:
         return "category", args.category_url, args.category_url
     return "url", args.url, args.url
+
+
+def _load_run_state_if_present(run_dir: Path):
+    store = RunStateStore(run_dir)
+    if not store.state_path.exists():
+        return None
+    return store.load_state()
 
 
 def build_output_dir(base_dir: Path, *, source_type: str, source_value: str, run_at: datetime) -> Path:

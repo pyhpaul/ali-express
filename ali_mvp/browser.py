@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
 from pathlib import Path
@@ -171,8 +172,14 @@ def collect_raw_products(
     port: int | None = None,
     enrich_detail: bool = False,
     pages: int | None = None,
+    browser_hardening: str = "minimal",
 ) -> list[dict[str, object]]:
-    page = open_listing_page(url, user_data_dir=user_data_dir, port=port)
+    page = open_listing_page(
+        url,
+        user_data_dir=user_data_dir,
+        port=port,
+        browser_hardening=browser_hardening,
+    )
     all_products: list[dict[str, object]] = []
     seen_urls: set[str] = set()
     current_page = 1
@@ -209,10 +216,25 @@ def open_listing_page(
     *,
     user_data_dir: str | None = None,
     port: int | None = None,
+    browser_hardening: str = "minimal",
+    proxy: str = "",
+    user_agent: str = "",
+    accept_language: str = "",
 ) -> ChromiumPage:
-    page = ChromiumPage(_build_options(user_data_dir=user_data_dir, port=port))
+    page = ChromiumPage(
+        _build_options(
+            user_data_dir=user_data_dir,
+            port=port,
+            browser_hardening=browser_hardening,
+            proxy=proxy,
+            user_agent=user_agent,
+            accept_language=accept_language,
+        )
+    )
     page.get(url)
-    time.sleep(3)
+    if browser_hardening == "minimal":
+        _init_page_stealth(page)
+    _pause_after_navigation()
     return page
 
 
@@ -244,8 +266,8 @@ def enrich_listing_products(page: ChromiumPage, products: list[dict[str, object]
 def _collect_current_page(page: ChromiumPage, *, scroll_rounds: int) -> list[dict[str, object]]:
     best: list[dict[str, object]] = []
     for _ in range(scroll_rounds):
-        page.run_js("window.scrollBy(0, Math.max(900, window.innerHeight || 900));")
-        time.sleep(1)
+        _human_scroll_step(page)
+        _sleep_jitter(0.8, 1.2)
         raw = page.run_js(PRODUCT_SCRIPT)
         if isinstance(raw, list) and len(raw) >= len(best):
             best = _prepare_listing_products(raw)
@@ -259,13 +281,14 @@ def _go_to_next_page(page: ChromiumPage, target_page: int) -> bool:
     if not _scroll_to_pagination(page):
         return False
     old_signature = _page_signature(page)
+    _sleep_jitter(0.2, 0.6)
     clicked = page.run_js(NEXT_PAGE_SCRIPT.replace("__TARGET_PAGE__", str(target_page)))
     if not clicked:
         return False
     if not _wait_for_listing_change(page, old_signature):
         return False
     page.run_js("window.scrollTo(0, 0);")
-    time.sleep(1)
+    _pause_after_navigation()
     return True
 
 
@@ -279,7 +302,7 @@ def _scroll_to_pagination(page: ChromiumPage, rounds: int = 12) -> bool:
             "return Math.max(document.body.scrollHeight || 0, document.documentElement.scrollHeight || 0);"
         )
         page.run_js("window.scrollTo(0, Math.max(document.body.scrollHeight || 0, document.documentElement.scrollHeight || 0));")
-        time.sleep(1)
+        _sleep_jitter(0.8, 1.2)
         if page.run_js(PAGINATION_READY_SCRIPT):
             return True
         if height == last_height:
@@ -555,95 +578,99 @@ return (() => {
 
 
 def _enrich_product_details(page: ChromiumPage, products: list[dict[str, object]]) -> None:
-    listing_url = page.url
-    current_listing_page: int | None = None
-    listing_context_ready = False
+    listing_url = str(getattr(page, "url", "") or "")
     for index, product in enumerate(products):
-        _prepare_listing_product(product)
-        detail_url = str(product.get("resolvedProductUrl") or product.get("url") or "")
-        if not detail_url:
-            continue
-        entry_type = str(product.get("entryType") or "")
-        try:
-            target_listing_page = _listing_page_number(product)
-            has_listing_context = _has_listing_context(product)
-            if has_listing_context and (not listing_context_ready or current_listing_page != target_listing_page):
-                if not _restore_listing_context(page, product, str(listing_url or "")):
+        status = enrich_single_product_detail(page, product)
+        if status == "captcha_blocked":
+            _mark_detail_status(products[index + 1 :], "detail_skipped_after_captcha")
+            break
+    if listing_url and str(getattr(page, "url", "") or "") != listing_url:
+        page.get(listing_url)
+
+
+def enrich_single_product_detail(page: ChromiumPage, product: dict[str, object]) -> str:
+    listing_url = str(getattr(page, "url", "") or "")
+    _prepare_listing_product(product)
+    detail_url = str(product.get("resolvedProductUrl") or product.get("url") or "")
+    if not detail_url:
+        product["detailStatus"] = "detail_missing_url"
+        return "detail_missing_url"
+
+    entry_type = str(product.get("entryType") or "")
+    has_listing_context = _has_listing_context(product)
+    detail_opened = False
+    try:
+        if has_listing_context and not _restore_listing_context(page, product, listing_url):
+            product["detailStatus"] = "listing_context_failed"
+            return "listing_context_failed"
+        if entry_type == "promo_card":
+            promo_url = str(product.get("promoLandingUrl") or product.get("cardUrl") or "")
+            if promo_url:
+                page.get(promo_url)
+                time.sleep(2)
+                promo = page.run_js(PROMO_FIELDS_SCRIPT)
+                if isinstance(promo, dict):
+                    product.update(promo)
+                if has_listing_context and not _restore_listing_context(page, product, listing_url):
                     product["detailStatus"] = "listing_context_failed"
-                    listing_context_ready = False
-                    continue
-                current_listing_page = target_listing_page
-                listing_context_ready = True
-            if entry_type == "promo_card":
-                promo_url = str(product.get("promoLandingUrl") or product.get("cardUrl") or "")
-                if promo_url:
-                    page.get(promo_url)
-                    time.sleep(2)
-                    promo = page.run_js(PROMO_FIELDS_SCRIPT)
-                    if isinstance(promo, dict):
-                        product.update(promo)
-                    listing_context_ready = False
-                    if has_listing_context:
-                        if not _restore_listing_context(page, product, str(listing_url or "")):
-                            product["detailStatus"] = "listing_context_failed"
-                            continue
-                        current_listing_page = target_listing_page
-                        listing_context_ready = True
-            opened = _open_detail_from_listing_context(page, product)
-            if not opened:
-                product["detailStatus"] = "detail_open_failed"
-                if has_listing_context:
-                    _restore_listing_context(page, product, str(listing_url or ""))
-                elif listing_url:
-                    page.get(str(listing_url))
-                    _wait_for_page_ready(page)
-                listing_context_ready = False
-                continue
-            detail_page = _resolve_detail_page_context(page, product)
-            if _is_captcha_page(str(detail_page.url), str(getattr(detail_page, "title", ""))):
-                if not _wait_for_captcha_resolution(detail_page):
-                    product["detailStatus"] = "captcha_blocked"
-                    _mark_detail_status(products[index + 1 :], "detail_skipped_after_captcha")
-                    break
-            detail = detail_page.run_js(DETAIL_FIELDS_SCRIPT)
-        except Exception:
-            detail = {}
+                    return "listing_context_failed"
+        opened = _open_detail_from_listing_context(page, product)
+        if not opened:
+            product["detailStatus"] = "detail_open_failed"
             if has_listing_context:
-                try:
-                    _restore_listing_context(page, product, str(listing_url or ""))
-                except Exception:
-                    pass
+                _restore_listing_context(page, product, listing_url)
             elif listing_url:
-                try:
-                    page.get(str(listing_url))
-                    _wait_for_page_ready(page)
-                except Exception:
-                    pass
-            listing_context_ready = False
-        if isinstance(detail, dict):
-            detail = _normalize_detail_fields(detail)
-            product.update(detail)
-        if detail_url:
-            product["url"] = detail_url
-        try:
-            if product.get("_detailUsedNewTab"):
-                detail_tab_id = str(product.get("_detailTabId") or "")
-                if detail_tab_id:
-                    page.close_tabs(detail_tab_id)
-                page.activate_tab(str(product.get("_listingTabId") or page.tab_id))
-                _wait_for_page_ready(page)
-            else:
-                page.back()
-                _wait_for_page_ready(page)
-        except Exception:
-            if listing_url:
                 page.get(listing_url)
                 _wait_for_page_ready(page)
-            listing_context_ready = False
-            continue
-        listing_context_ready = entry_type != "promo_card"
+            return "detail_open_failed"
+        detail_opened = True
+        detail_page = _resolve_detail_page_context(page, product)
+        if _is_captcha_page(str(detail_page.url), str(getattr(detail_page, "title", ""))):
+            if not _wait_for_captcha_resolution(detail_page):
+                product["detailStatus"] = "captcha_blocked"
+                return "captcha_blocked"
+        raw_detail = detail_page.run_js(DETAIL_FIELDS_SCRIPT)
+        if isinstance(raw_detail, dict):
+            detail = _normalize_detail_fields(raw_detail)
+            product.update(detail)
+        product["url"] = detail_url
+        product["detailStatus"] = "detail_enriched"
+        return "detail_enriched"
+    except Exception:
+        product["detailStatus"] = str(product.get("detailStatus") or "detail_open_failed")
+        return str(product["detailStatus"])
+    finally:
+        if detail_opened:
+            _restore_listing_page_after_detail(page, product, listing_url)
+
+
+def _restore_listing_page_after_detail(page: ChromiumPage, product: dict[str, object], listing_url: str) -> None:
+    try:
+        if product.get("_detailUsedNewTab"):
+            detail_tab_id = str(product.get("_detailTabId") or "")
+            if detail_tab_id:
+                page.close_tabs(detail_tab_id)
+            page.activate_tab(str(product.get("_listingTabId") or page.tab_id))
+            _wait_for_page_ready(page)
+            return
+        page.back()
+        _wait_for_page_ready(page)
+        return
+    except Exception:
+        pass
+
+    if _has_listing_context(product):
+        try:
+            if _restore_listing_context(page, product, listing_url):
+                return
+        except Exception:
+            pass
     if listing_url:
-        page.get(listing_url)
+        try:
+            page.get(listing_url)
+            _wait_for_page_ready(page)
+        except Exception:
+            pass
 
 
 def _wait_for_captcha_resolution(
@@ -1035,10 +1062,70 @@ def _strip_internal_product_fields(product: dict[str, object]) -> None:
         product.pop(key, None)
 
 
-def _build_options(user_data_dir: str | None, port: int | None) -> ChromiumOptions:
+def _sleep_jitter(min_s: float, max_s: float) -> None:
+    time.sleep(random.uniform(min_s, max_s))
+
+
+def _human_scroll_step(page: ChromiumPage) -> None:
+    distance = random.randint(700, 1100)
+    page.run_js(f"window.scrollBy(0, {distance});")
+
+
+def _pause_after_navigation() -> None:
+    _sleep_jitter(0.8, 1.6)
+
+
+def _init_page_stealth(page: ChromiumPage) -> None:
+    if not hasattr(page, "run_js"):
+        return
+    page.run_js(
+        """
+return (() => {
+  try {
+    const define = (target, key, value) => {
+      try {
+        Object.defineProperty(target, key, {
+          configurable: true,
+          get: () => value,
+        });
+      } catch (error) {}
+    };
+    define(Navigator.prototype, 'webdriver', undefined);
+    define(Navigator.prototype, 'language', navigator.language || 'en-US');
+    define(Navigator.prototype, 'languages', navigator.languages || ['en-US', 'en']);
+    const originalQuery = window.navigator.permissions && window.navigator.permissions.query;
+    if (originalQuery) {
+      window.navigator.permissions.query = (parameters) => {
+        if (parameters && parameters.name === 'notifications') {
+          return Promise.resolve({ state: Notification.permission });
+        }
+        return originalQuery.call(window.navigator.permissions, parameters);
+      };
+    }
+  } catch (error) {}
+  return true;
+})()
+"""
+    )
+
+
+def _build_options(
+    user_data_dir: str | None,
+    port: int | None,
+    browser_hardening: str = "minimal",
+    proxy: str = "",
+    user_agent: str = "",
+    accept_language: str = "",
+) -> ChromiumOptions:
     options = ChromiumOptions()
     if port is not None:
         options.set_local_port(port)
     if user_data_dir:
         options.set_user_data_path(str(Path(user_data_dir).resolve()))
+    if proxy:
+        options.set_proxy(proxy)
+    if user_agent:
+        options.set_user_agent(user_agent)
+    if accept_language:
+        options.set_argument("--lang", accept_language.split(",", 1)[0])
     return options

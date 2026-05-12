@@ -23,6 +23,46 @@ python -m ali_mvp scrape --url "https://www.aliexpress.com/..." --max-items 80
 python -m ali_mvp scrape --category-url "https://www.aliexpress.com/category/100003109/women-clothing.html" --max-items 80
 ```
 
+Browser hardening:
+
+- `--browser-hardening off|minimal`
+- default: `minimal`
+
+Proxy and browser identity:
+
+- `--proxy http://127.0.0.1:8080`
+- `--proxy-file proxies.txt`
+- `--max-blocks-per-proxy 2`
+- `--user-agent "ua-fixed"`
+- `--accept-language "en-US,en;q=0.9"`
+
+### v2rayN sidecar proxy pool
+
+Use the local v2rayN installation as a proxy source:
+
+```bash
+python -m ali_mvp scrape \
+  --keyword "Home appliance accessories" \
+  --proxy-provider v2rayn \
+  --v2rayn-dir "C:\Users\lxy\Desktop\v2rayN-windows-64" \
+  --enrich-detail \
+  --user-data-dir .browser-profile
+```
+
+Behavior in this phase:
+
+- reads nodes from `guiConfigs/guiNDB.db -> ProfileItem`
+- generates per-node sidecar `xray` configs under `<run_dir>/proxy_runtime`
+- probes each local socks5 endpoint before opening the browser
+- picks one healthy endpoint for the current run
+- cleans sidecar processes on exit
+
+Current limitations:
+
+- no mid-run live proxy hot-swap inside one browser session
+- no automatic CAPTCHA solving
+- no adaptive long-term health scoring beyond startup probe and per-run rotation
+
 Pagination semantics:
 
 - `--max-items` is the total number of products requested for the run.
@@ -41,6 +81,24 @@ Optional product blacklist filtering:
 ```bash
 python -m ali_mvp scrape --keyword "Home appliance accessories" --blacklist-file rules/product_blacklist.json
 python -m ali_mvp scrape --keyword "Home appliance accessories" --blacklist-file rules/product_blacklist.json --reject-keyword sensor --reject-keyword relay
+```
+
+Resume a blocked run:
+
+```bash
+python -m ali_mvp resume --run-dir data/home-appliance-accessories/20260511_120000
+```
+
+Retry only unfinished details:
+
+```bash
+python -m ali_mvp resume --run-dir data/home-appliance-accessories/20260511_120000 --details-only
+```
+
+Resume with temporary proxy or browser identity override:
+
+```bash
+python -m ali_mvp resume --run-dir data/home-appliance-accessories/20260511_120000 --proxy http://127.0.0.1:8080 --user-agent "ua-fixed" --accept-language "en-US,en;q=0.9"
 ```
 
 Detail enrichment adds these columns to `products.csv`:
@@ -63,13 +121,18 @@ Outputs:
 
 - `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/products.csv`
 - `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/products_filter_audit.csv`
+- `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/products_review.csv`
 - `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/category_rank.csv`
+- `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/run_manifest.json`
+- `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/run_state.json`
+- `data/<keyword-slug>/<YYYYMMDD_HHMMSS>/run_summary.json`
 
 For example, `--keyword "women dress"` writes to:
 
 ```text
 data/women-dress/20260508_224530/products.csv
 data/women-dress/20260508_224530/products_filter_audit.csv
+data/women-dress/20260508_224530/products_review.csv
 data/women-dress/20260508_224530/category_rank.csv
 ```
 
@@ -80,8 +143,54 @@ Category URL runs are grouped by the category slug when the URL exposes one:
 ```text
 data/category-women-clothing/20260508_224530/products.csv
 data/category-women-clothing/20260508_224530/products_filter_audit.csv
+data/category-women-clothing/20260508_224530/products_review.csv
 data/category-women-clothing/20260508_224530/category_rank.csv
 ```
+
+Postprocess outputs:
+
+```bash
+python -m ali_mvp postprocess --run-dir data/home-appliance-accessories/20260511_120000
+```
+
+Use MyMemory for free zh translation:
+
+```bash
+python -m ali_mvp postprocess --run-dir data/home-appliance-accessories/20260511_120000 --translator mymemory
+```
+
+Optional higher-quota hint for MyMemory:
+
+```bash
+python -m ali_mvp postprocess --run-dir data/home-appliance-accessories/20260511_120000 --translator mymemory --translator-email you@example.com
+```
+
+Additional outputs:
+
+- `products_zh.csv`
+- `products_filter_audit_zh.csv`
+- `review_only.csv`
+- `products_report.html`
+- `translation_cache.json`
+
+Recommended review workflow for non-technical staff:
+
+1. Open `products_report.html`
+   - Use the built-in filters to switch between:
+     - `只看拒绝入库`
+     - `只看建议入库`
+     - specific reject reasons such as `遥控控制类` or `点火控制类`
+2. Use `review_only.csv` for spreadsheet review
+   - This is the compact handoff file for staff
+   - Key columns:
+     - `title` / `title_zh`
+     - `decision_label`
+     - `stage_label`
+     - `review_note`
+3. Use `products_zh.csv` only when more product context is needed
+   - It keeps the fuller translated dataset for deeper review
+4. Use `products_filter_audit_zh.csv` when blacklist hit details must be audited
+   - It retains the rule-hit columns and zh labels
 
 Blacklist filtering semantics:
 
@@ -207,16 +316,109 @@ Code locations:
 - CSV writer: `ali_mvp/output.py` -> `write_filter_audit_csv()`
 - Output path and write call: `ali_mvp/cli.py` -> `run_scrape()`
 
+### `products_review.csv`
+
+Purpose: review-oriented table for accepted and rejected rows with enough product context to audit blacklist decisions quickly.
+
+Columns:
+
+- `source_type`
+- `source_value`
+- `title`
+- `product_url`
+- `image_url`
+- `price`
+- `search_card_url`
+- `entry_type`
+- `is_promoted`
+- `promo_channel`
+- `promotion_text`
+- `shop_name`
+- `shipping_text`
+- `attributes_text`
+- `description_text`
+- `detail_status`
+- `filter_decision`
+- `filter_stage`
+- `reject_groups`
+- `reject_terms`
+- `reject_fields`
+- `warning_groups`
+- `warning_terms`
+- `warning_fields`
+
+Code locations:
+
+- Review row join: `ali_mvp/review.py` -> `build_review_rows()`
+- CSV columns: `ali_mvp/output.py` -> `REVIEW_FIELDS`
+- Output path and write call: `ali_mvp/cli.py` -> `run_scrape()`
+
+### Postprocess artifacts
+
+`python -m ali_mvp postprocess --run-dir ...` reads the scrape outputs in one run directory and generates:
+
+- `products_review.csv`
+- `products_zh.csv`
+- `products_filter_audit_zh.csv`
+- `review_only.csv`
+- `products_report.html`
+- `translation_cache.json`
+
+Suggested reviewer usage:
+
+- `products_report.html`
+  - visual review page
+  - best for quick pass/fail inspection and reason filtering
+- `review_only.csv`
+  - smallest handoff file for staff
+  - sorted for manual review with rejected rows first
+- `products_zh.csv`
+  - fuller translated product dataset
+- `products_filter_audit_zh.csv`
+  - full blacklist audit trail with zh labels
+
+Translator options:
+
+- `--translator identity|mymemory`
+- `--translator-email you@example.com` for optional MyMemory `de` parameter
+
+Code locations:
+
+- Orchestration: `ali_mvp/postprocess.py` -> `run_postprocess_for_dir()`
+- HTML rendering: `ali_mvp/reporting.py` -> `render_report_html()`
+- Translation/cache: `ali_mvp/translation.py`
+
 ## Limitations
 
-This MVP is for low-frequency validation. It does not handle proxy pools, CAPTCHA solving, account pools, checkout, or official AliExpress API access.
+This MVP is for low-frequency validation. It now supports a minimal sequential proxy pool and fixed browser identity per run, but it still does not handle automated CAPTCHA solving, account pools, checkout, or official AliExpress API access.
+
+Current anti-risk status:
+
+- Done in this phase:
+  - optional browser pacing / stealth hardening via `--browser-hardening off|minimal`
+  - single-proxy or proxy-file based sequential rotation via `--proxy`, `--proxy-file`, and `--max-blocks-per-proxy`
+  - fixed browser identity per run via `--user-agent` and `--accept-language`
+  - captcha page detection
+  - manual captcha wait-and-resume flow
+  - graceful detail-status fallback when captcha is not cleared
+- Not done in this phase:
+  - automatic slider / captcha solving
+  - proxy health scoring or adaptive pool management
+  - advanced fingerprint / header rotation strategy
+  - fully automated recovery under sustained risk-control pressure
 
 ## Manual Validation
 
 After logging in, run:
 
 ```bash
-python -m ali_mvp scrape --keyword "women dress" --max-items 20
+python -m ali_mvp scrape --keyword "Home appliance accessories" --max-items 20 --enrich-detail --blacklist-file rules/product_blacklist.json --user-data-dir .browser-profile
+```
+
+If the run is blocked, clear the CAPTCHA manually in the same profile and then resume:
+
+```bash
+python -m ali_mvp resume --run-dir data/home-appliance-accessories/<timestamp>
 ```
 
 If no products are extracted, open the browser window and check for region selection, CAPTCHA, cookie banners, or page layout changes.
