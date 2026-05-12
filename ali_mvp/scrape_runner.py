@@ -226,7 +226,12 @@ def resume_scrape(
                 review_context_rows=review_context_rows,
             )
             if blocked:
-                _record_proxy_health(proxy_pool=proxy_pool, state=resumed_state, blocked=True)
+                _record_proxy_health(
+                    proxy_pool=proxy_pool,
+                    state=resumed_state,
+                    blocked=True,
+                    proxy_key=proxy_pool.current_key(),
+                )
                 return RunResult(
                     exit_code=3,
                     accepted_count=resumed_state.accepted_count,
@@ -736,17 +741,35 @@ def _record_proxy_health(*, proxy_pool: ProxyPool, state: RunState, blocked: boo
     record_event = getattr(proxy_pool, "record_event", None)
     if record_event is None:
         return
+    event = _proxy_health_event_for_state(state=state, blocked=blocked, blocked_proxy_key=proxy_key)
+    if not event:
+        return
     now_iso = _utc_now_iso()
-    if blocked:
-        record_event("captcha", now_iso=now_iso, proxy_key=proxy_key)
-    elif state.last_error:
-        record_event("timeout", now_iso=now_iso, proxy_key=proxy_key)
-    else:
-        record_event("success", now_iso=now_iso, proxy_key=proxy_key)
+    record_event(event, now_iso=now_iso, proxy_key=proxy_key)
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _proxy_health_event_for_state(*, state: RunState, blocked: bool, blocked_proxy_key: str) -> str:
+    if blocked and blocked_proxy_key:
+        return "captcha"
+    if not state.last_error:
+        return "success"
+
+    last_error = state.last_error.lower()
+    timeout_markers = (
+        "timeout",
+        "timed out",
+        "proxy disconnected",
+        "connection reset",
+        "connection refused",
+        "socket",
+    )
+    if any(marker in last_error for marker in timeout_markers):
+        return "timeout"
+    return ""
 
 
 def _write_outputs(

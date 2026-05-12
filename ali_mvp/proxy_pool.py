@@ -28,22 +28,36 @@ class ProxyPool:
 
     @classmethod
     def from_manifest(cls, *, manifest: RunManifest, run_dir: Path) -> "ProxyPool":
+        health_store = ProxyHealthStore(run_dir.parent / "_proxy_health.json")
+        health_records = health_store.load()
         if manifest.proxy_provider == "manual":
-            return cls.from_sources(
+            pool = cls.from_sources(
                 proxy=manifest.proxy,
                 proxy_file=manifest.proxy_file,
                 max_blocks_per_proxy=manifest.max_blocks_per_proxy,
             )
+            pool.proxy_keys = list(pool.proxies)
+            pool.health_store = health_store
+            pool.health_records = health_records
+            eligible_indices = pool._eligible_indices(now_iso=_utc_now())
+            pool.proxies = [pool.proxies[index] for index in eligible_indices]
+            pool.proxy_keys = [pool.proxy_keys[index] for index in eligible_indices]
+            return pool
 
-        health_store = ProxyHealthStore(run_dir.parent / "_proxy_health.json")
-        health_records = health_store.load()
         source = load_v2rayn_source(Path(manifest.v2rayn_dir))
         runtime = start_sidecar_runtime(source, runtime_dir=run_dir / "proxy_runtime")
-        healthy = [
-            endpoint
-            for endpoint in runtime.healthy_endpoints()
-            if not _is_in_cooldown(health_records.get(endpoint.key), now_iso=_utc_now())
-        ]
+        healthy_endpoints = runtime.healthy_endpoints()
+        pool = cls(
+            proxies=[endpoint.proxy_url for endpoint in healthy_endpoints],
+            proxy_keys=[endpoint.key for endpoint in healthy_endpoints],
+            proxy_labels=[endpoint.label for endpoint in healthy_endpoints],
+            max_blocks_per_proxy=max(1, manifest.max_blocks_per_proxy),
+            runtime=runtime,
+            health_store=health_store,
+            health_records=health_records,
+        )
+        eligible_indices = pool._eligible_indices(now_iso=_utc_now())
+        healthy = [healthy_endpoints[index] for index in eligible_indices]
         if not healthy:
             runtime.close()
             raise NoHealthyProxyError(f"No healthy v2rayN sidecar proxies under {manifest.v2rayn_dir}")

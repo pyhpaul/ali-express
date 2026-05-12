@@ -108,16 +108,15 @@ def test_proxy_pool_restore_selection_clamps_negative_index_to_zero():
     assert pool.block_events_on_current == 1
 
 
-def test_proxy_pool_from_manifest_manual_reuses_from_sources(monkeypatch, tmp_path):
-    calls: list[tuple[str, str, int]] = []
-    expected = ProxyPool(proxies=["http://manual:8080"], max_blocks_per_proxy=3)
-
-    def fake_from_sources(*, proxy: str, proxy_file: str, max_blocks_per_proxy: int) -> ProxyPool:
-        calls.append((proxy, proxy_file, max_blocks_per_proxy))
-        return expected
-
-    monkeypatch.setattr(ProxyPool, "from_sources", classmethod(lambda cls, *, proxy, proxy_file, max_blocks_per_proxy: fake_from_sources(proxy=proxy, proxy_file=proxy_file, max_blocks_per_proxy=max_blocks_per_proxy)))
-
+def test_proxy_pool_from_manifest_manual_filters_cooldown_and_attaches_health_store(tmp_path):
+    run_dir = tmp_path / "run-1"
+    run_dir.mkdir()
+    proxy_file = tmp_path / "proxies.txt"
+    proxy_file.write_text("http://manual-a:8080\nhttp://manual-b:8080\n", encoding="utf-8")
+    (tmp_path / "_proxy_health.json").write_text(
+        '{"http://manual-a:8080":{"success_count":0,"timeout_count":0,"captcha_count":1,"block_count":1,"last_event":"captcha","last_failed_at":"2026-05-12T10:00:00Z","cooldown_until":"2099-01-01T00:00:00Z"}}',
+        encoding="utf-8",
+    )
     manifest = RunManifest(
         source_type="keyword",
         source_value="fan motor",
@@ -130,15 +129,16 @@ def test_proxy_pool_from_manifest_manual_reuses_from_sources(monkeypatch, tmp_pa
         enrich_detail=False,
         blacklist_file=None,
         proxy_provider="manual",
-        proxy="http://manual:8080",
-        proxy_file=str(tmp_path / "proxies.txt"),
+        proxy="",
+        proxy_file=str(proxy_file),
         max_blocks_per_proxy=3,
     )
 
-    pool = ProxyPool.from_manifest(manifest=manifest, run_dir=tmp_path)
+    pool = ProxyPool.from_manifest(manifest=manifest, run_dir=run_dir)
 
-    assert pool is expected
-    assert calls == [("http://manual:8080", str(tmp_path / "proxies.txt"), 3)]
+    assert pool.proxies == ["http://manual-b:8080"]
+    assert pool.proxy_keys == ["http://manual-b:8080"]
+    assert pool.health_store is not None
 
 
 def test_proxy_pool_from_manifest_closes_runtime_before_no_healthy_proxy_error(monkeypatch, tmp_path):
@@ -259,3 +259,25 @@ def test_record_proxy_health_uses_runtime_timestamp_helper(tmp_path, monkeypatch
 
     assert record.last_failed_at == "2026-05-12T12:34:56Z"
     assert record.cooldown_until == "2026-05-12T12:49:56Z"
+
+
+def test_record_proxy_health_ignores_non_proxy_errors(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    health_file = tmp_path / "_proxy_health.json"
+    pool = ProxyPool(
+        proxies=["socks5://127.0.0.1:11080"],
+        proxy_keys=["node-a"],
+        proxy_labels=["A"],
+        max_blocks_per_proxy=2,
+    )
+    pool.health_store = ProxyHealthStore(health_file)
+    pool.health_records = {}
+    monkeypatch.setattr(scrape_runner, "_utc_now_iso", lambda: "2026-05-12T12:34:56Z")
+
+    scrape_runner._record_proxy_health(
+        proxy_pool=pool,
+        state=RunState(last_error="phone_verification_required"),
+        blocked=False,
+    )
+
+    assert not health_file.exists()
