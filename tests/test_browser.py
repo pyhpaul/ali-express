@@ -428,6 +428,79 @@ def test_enrich_single_product_detail_marks_captcha_blocked(monkeypatch):
     assert product.get("descriptionText", "") == ""
 
 
+def test_enrich_single_product_detail_overwrites_captcha_diagnostic_on_success(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.url = "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"
+            self.title = "listing"
+
+        def get(self, url):
+            self.url = url
+
+        def back(self):
+            self.url = "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"
+            self.title = "listing"
+
+        def run_js(self, script):
+            if script == browser.DETAIL_FIELDS_SCRIPT:
+                return {
+                    "shopName": "Example Store",
+                    "shopNameCandidates": ["Example Store"],
+                    "attributesText": '{"Type":"Accessory"}',
+                    "attributePairs": [],
+                    "descriptionText": "detail text",
+                    "descriptionFrameText": "",
+                    "jsonLdDescription": "",
+                    "metaDescription": "",
+                    "breadcrumb": "",
+                    "breadcrumbCandidates": [],
+                    "detailReviewText": "",
+                    "reviewerText": "",
+                }
+            return {}
+
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        browser,
+        "_open_detail_from_listing_context",
+        lambda page, product: setattr(page, "url", "https://www.aliexpress.com//item/1.html/_____tmd_____/punish?x5step=1")
+        or setattr(page, "title", "验证码拦截")
+        or True,
+    )
+    monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
+    monkeypatch.setattr(
+        browser,
+        "_wait_for_captcha_resolution",
+        lambda page, timeout_seconds=60.0, interval_seconds=1.0: (
+            True,
+            {
+                "stage": "detail",
+                "page_url": "https://www.aliexpress.com//item/1.html/_____tmd_____/punish?x5step=1",
+                "result": "solved",
+                "fail_reason": "",
+            },
+        ),
+    )
+
+    product = {
+        "url": "https://www.aliexpress.com/item/1.html",
+        "title": "resolved first",
+        "_captchaDiagnostic": {"stage": "old", "page_url": "old", "result": "failed", "fail_reason": "old"},
+    }
+
+    status = browser.enrich_single_product_detail(FakePage(), product)
+
+    assert status == "detail_enriched"
+    assert product["detailStatus"] == "detail_enriched"
+    assert product["_captchaDiagnostic"] == {
+        "stage": "detail",
+        "page_url": "https://www.aliexpress.com//item/1.html/_____tmd_____/punish?x5step=1",
+        "result": "solved",
+        "fail_reason": "",
+    }
+    assert product["shopName"] == "Example Store"
+
+
 def test_enrich_single_product_detail_marks_missing_url_status():
     class FakePage:
         def __init__(self):

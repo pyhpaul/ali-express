@@ -680,9 +680,9 @@ def enrich_single_product_detail(page: ChromiumPage, product: dict[str, object])
         detail_page = _resolve_detail_page_context(page, product)
         if _is_captcha_page(str(detail_page.url), str(getattr(detail_page, "title", ""))):
             solved, diagnostic = _coerce_captcha_resolution_result(_wait_for_captcha_resolution(detail_page))
+            if diagnostic:
+                product["_captchaDiagnostic"] = diagnostic
             if not solved:
-                if diagnostic:
-                    product["_captchaDiagnostic"] = diagnostic
                 product["detailStatus"] = "captcha_blocked"
                 return "captcha_blocked"
         raw_detail = detail_page.run_js(DETAIL_FIELDS_SCRIPT)
