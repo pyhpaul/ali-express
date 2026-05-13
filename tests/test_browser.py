@@ -1165,20 +1165,26 @@ def test_wait_for_captcha_resolution_keeps_existing_timeout_path_when_solver_fai
             self.title = "验证码拦截"
 
     page = FakePage()
-    calls = {"solve": 0}
-    moments = iter([0.0, 0.2, 1.5])
+    calls = {"solve": 0, "sleep": 0, "ready": 0}
+    moments = iter([0.0, 0.2, 0.6, 1.2])
 
     monkeypatch.setattr(
         browser,
         "try_solve_captcha",
         lambda target, timeout_seconds=30.0: calls.__setitem__("solve", calls["solve"] + 1) or False,
     )
-    monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
-    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        browser,
+        "_wait_for_page_ready",
+        lambda page, timeout_seconds=8.0: calls.__setitem__("ready", calls["ready"] + 1),
+    )
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: calls.__setitem__("sleep", calls["sleep"] + 1))
     monkeypatch.setattr(browser.time, "monotonic", lambda: next(moments))
 
     assert browser._wait_for_captcha_resolution(page, timeout_seconds=1.0, interval_seconds=0.1) is False
     assert calls["solve"] == 1
+    assert calls["sleep"] == 2
+    assert calls["ready"] == 2
 
 
 def test_normalize_detail_fields_prefers_real_store_name_and_cleans_breadcrumb_and_description():
