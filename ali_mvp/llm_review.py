@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Mapping
 
-from .llm_client import LlmConfig
+from .llm_client import LlmConfig, build_llm_messages, request_llm_review
 from .output import read_csv_rows, write_llm_review_csv
 
 
@@ -76,12 +76,13 @@ def run_llm_review_for_dir(
     config: LlmConfig,
     force: bool = False,
     max_items: int | None = None,
-    reviewer: Callable[[dict[str, str], LlmConfig], Mapping[str, object]],
+    reviewer: Callable[[dict[str, str], LlmConfig], Mapping[str, object]] | None = None,
 ) -> LlmReviewRunResult:
     review_rows = read_csv_rows(run_dir / "products_review.csv")
     if max_items is not None:
         review_rows = review_rows[:max_items]
 
+    review_fn = reviewer or _default_reviewer
     existing_rows = _load_existing_llm_rows(run_dir / "products_llm_review.csv")
     output_rows: list[dict[str, str]] = []
     reviewed_count = 0
@@ -96,7 +97,7 @@ def run_llm_review_for_dir(
             continue
 
         try:
-            result = reviewer(row, config)
+            result = review_fn(row, config)
             output_rows.append(_build_llm_review_row(row, config=config, result=result))
             reviewed_count += 1
         except Exception as exc:
@@ -229,6 +230,11 @@ def _build_run_result(
         keep_count=keep_count,
         drop_count=drop_count,
     )
+
+
+def _default_reviewer(row: dict[str, str], config: LlmConfig) -> Mapping[str, object]:
+    messages = build_llm_messages(row)
+    return request_llm_review(messages, config=config)
 
 
 def _resolve_source_label(rows: list[dict[str, str]]) -> str:

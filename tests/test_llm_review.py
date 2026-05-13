@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from ali_mvp import llm_review as llm_review_module
 from ali_mvp.llm_client import LlmConfig
 from ali_mvp.output import LLM_REVIEW_FIELDS, REVIEW_FIELDS, read_csv_rows, write_dict_csv, write_llm_review_csv
 from ali_mvp.llm_review import (
@@ -235,6 +236,44 @@ def test_run_llm_review_for_dir_respects_max_items(tmp_path):
     assert seen == [row1["product_url"]]
     assert result.total_rows == 1
     assert len(rows) == 1
+
+
+def test_run_llm_review_for_dir_uses_default_reviewer_when_not_provided(monkeypatch, tmp_path):
+    run_dir = tmp_path
+    config = _config()
+    review_row = _review_row(product_url="https://example.test/item/1", title="Adapter shell")
+    _write_products_review_csv(run_dir, [review_row])
+    seen: dict[str, object] = {}
+
+    def fake_build_llm_messages(row):
+        seen["build_row"] = row
+        return [{"role": "user", "content": row["title"]}]
+
+    def fake_request_llm_review(messages, *, config, timeout_seconds=30):
+        seen["request"] = {
+            "messages": messages,
+            "config": config,
+            "timeout_seconds": timeout_seconds,
+        }
+        return {
+            "decision": "keep",
+            "reason": "looks like an accessory",
+            "risk_tags": ["battery"],
+            "confidence": "high",
+            "summary_zh": "看起来是配件",
+        }
+
+    monkeypatch.setattr(llm_review_module, "build_llm_messages", fake_build_llm_messages, raising=False)
+    monkeypatch.setattr(llm_review_module, "request_llm_review", fake_request_llm_review, raising=False)
+
+    result = run_llm_review_for_dir(run_dir, config=config)
+
+    rows = read_csv_rows(run_dir / "products_llm_review.csv")
+    assert result.reviewed_count == 1
+    assert seen["build_row"]["product_url"] == review_row["product_url"]
+    assert seen["request"]["messages"] == [{"role": "user", "content": review_row["title"]}]
+    assert seen["request"]["config"] == config
+    assert rows[0]["llm_decision"] == "keep"
 
 
 def test_run_llm_review_for_dir_returns_non_zero_exit_code_when_all_rows_fail(tmp_path):

@@ -8,6 +8,9 @@ from urllib.parse import quote_plus
 from urllib.parse import urlparse
 
 from .filtering import load_filter_groups
+from .llm_client import resolve_llm_config
+from .llm_review import run_llm_review_for_dir
+from .output import read_csv_rows
 from . import scrape_runner
 from .run_state import RunManifest, RunStateStore
 
@@ -181,7 +184,29 @@ def run_resume(args: argparse.Namespace) -> int:
 
 def run_llm_review(args: argparse.Namespace) -> int:
     _validate_llm_max_items(args)
-    raise NotImplementedError("llm-review implementation will be added in Task 5")
+    run_dir = Path(args.run_dir)
+    config = resolve_llm_config(
+        run_dir=run_dir,
+        base_url=args.llm_base_url,
+        api_key=args.llm_api_key,
+        model=args.llm_model,
+    )
+    result = run_llm_review_for_dir(
+        run_dir,
+        config=config,
+        force=args.llm_force,
+        max_items=args.llm_max_items,
+    )
+    print(f"Reviewed rows: {result.reviewed_count}")
+    print(f"Skipped rows: {result.skipped_count}")
+    print(f"Failed rows: {result.failed_count}")
+    print(f"Keep rows: {result.keep_count}")
+    print(f"Drop rows: {result.drop_count}")
+    print(f"Wrote: {run_dir / 'products_llm_review.csv'}")
+    print(f"Wrote: {run_dir / 'products_final_keep.csv'}")
+    print(f"Wrote: {run_dir / 'products_final_drop.csv'}")
+    print(f"Wrote: {run_dir / 'products_llm_report.html'}")
+    return result.exit_code
 
 
 def run_scrape(args: argparse.Namespace) -> int:
@@ -245,6 +270,13 @@ def run_scrape(args: argparse.Namespace) -> int:
     print(f"Wrote: {run_dir / 'category_rank.csv'}")
     if result.exit_code == 2:
         print("No accepted products extracted. Check login state, CAPTCHA, selector changes, or blacklist rules.")
+    if result.exit_code in (0, 2):
+        if not getattr(args, "llm_review", False):
+            return result.exit_code
+        llm_exit_code = _run_llm_review_after_scrape(run_dir=run_dir, args=args)
+        if llm_exit_code is not None:
+            return llm_exit_code
+        return result.exit_code
     return result.exit_code
 
 
@@ -265,6 +297,23 @@ def _load_run_state_if_present(run_dir: Path):
     if not store.state_path.exists():
         return None
     return store.load_state()
+
+
+def _run_llm_review_after_scrape(*, run_dir: Path, args: argparse.Namespace) -> int | None:
+    if not getattr(args, "llm_review", False):
+        return None
+
+    review_path = run_dir / "products_review.csv"
+    if not review_path.exists():
+        print("Skip LLM review: products_review.csv not found.")
+        return None
+    if not read_csv_rows(review_path):
+        print("Skip LLM review: products_review.csv is empty.")
+        return None
+
+    llm_args = argparse.Namespace(**vars(args))
+    llm_args.run_dir = str(run_dir)
+    return run_llm_review(llm_args)
 
 
 def _add_scrape_llm_review_args(parser: argparse.ArgumentParser) -> None:
