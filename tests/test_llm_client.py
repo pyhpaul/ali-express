@@ -114,6 +114,64 @@ def test_resolve_llm_config_appends_v1_when_provider_base_url_has_no_api_prefix(
     )
 
 
+def test_resolve_llm_config_preserves_non_root_provider_path(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "ALI_MVP_LLM_BASE_URL=https://env.example/openai-compatible/",
+                "ALI_MVP_LLM_API_KEY=env-key",
+                "ALI_MVP_LLM_MODEL=env-model",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_llm_config(
+        tmp_path / "data" / "slug" / "20260513-120000",
+        base_url="",
+        api_key="",
+        model="",
+        env_path=env_path,
+    )
+
+    assert config == LlmConfig(
+        base_url="https://env.example/openai-compatible",
+        api_key="env-key",
+        model="env-model",
+        provider="openai-compatible",
+    )
+
+
+def test_resolve_llm_config_supports_utf8_sig_export_and_inline_comments(tmp_path: Path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "\ufeffexport ALI_MVP_LLM_BASE_URL=https://env.example/v1 # provider endpoint",
+                "export ALI_MVP_LLM_API_KEY='env-key' # secret",
+                'ALI_MVP_LLM_MODEL="env-model" # selected model',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_llm_config(
+        tmp_path / "data" / "slug" / "20260513-120000",
+        base_url="",
+        api_key="",
+        model="",
+        env_path=env_path,
+    )
+
+    assert config == LlmConfig(
+        base_url="https://env.example/v1",
+        api_key="env-key",
+        model="env-model",
+        provider="openai-compatible",
+    )
+
+
 def test_resolve_llm_config_ignores_dotenv_directory(tmp_path: Path):
     (tmp_path / ".env").mkdir()
 

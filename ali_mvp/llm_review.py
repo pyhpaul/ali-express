@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +25,35 @@ LLM_RISK_TAGS = {
     "uncertain",
     "not_accessory",
     "promo_bundle",
+}
+
+LLM_RISK_TAG_ALIASES = {
+    "electric": "electrical",
+    "electronics": "electrical",
+    "electronic": "electrical",
+    "cell": "battery",
+    "battery_pack": "battery",
+    "pcb": "chip",
+    "pcba": "chip",
+    "circuit_board": "chip",
+    "logic_board": "chip",
+    "control_board": "controller",
+    "controller_board": "controller",
+    "remote_control": "controller",
+    "control_module": "controller",
+    "heater": "heating",
+    "heating_element": "heating",
+    "wifi": "wireless",
+    "wi_fi": "wireless",
+    "wireless_module": "wireless",
+    "non_accessory": "not_accessory",
+    "not_an_accessory": "not_accessory",
+    "not_accessories": "not_accessory",
+    "promo": "promo_bundle",
+    "promo_pack": "promo_bundle",
+    "promo_bundle_offer": "promo_bundle",
+    "bundle": "promo_bundle",
+    "bundle_offer": "promo_bundle",
 }
 
 LLM_INPUT_HASH_FIELDS = (
@@ -152,6 +182,7 @@ def _can_reuse_existing(
         and existing.get("llm_prompt_version", "") == LLM_PROMPT_VERSION
         and existing.get("llm_model", "") == config.model
         and existing.get("llm_provider", "") == config.provider
+        and existing.get("llm_base_url", "") == config.base_url
         and classify_llm_row(existing) in {"keep", "drop"}
     )
 
@@ -192,6 +223,7 @@ def _build_llm_review_row(
         "llm_summary_zh": str(result.get("summary_zh", "")) if result and not error else "",
         "llm_model": config.model,
         "llm_provider": config.provider,
+        "llm_base_url": config.base_url,
         "llm_prompt_version": LLM_PROMPT_VERSION,
         "llm_input_hash": compute_llm_input_hash(row),
         "llm_reviewed_at": reviewed_at,
@@ -204,10 +236,20 @@ def _normalize_risk_tags(raw_tags: object) -> list[str]:
         return []
     tags: list[str] = []
     for tag in raw_tags:
-        normalized = str(tag).strip()
-        if normalized in LLM_RISK_TAGS:
+        normalized = _canonicalize_risk_tag(tag)
+        if normalized and normalized not in tags:
             tags.append(normalized)
     return tags
+
+
+def _canonicalize_risk_tag(raw_tag: object) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(raw_tag).strip().lower()).strip("_")
+    if not normalized:
+        return ""
+    canonical = LLM_RISK_TAG_ALIASES.get(normalized, normalized)
+    if canonical in LLM_RISK_TAGS:
+        return canonical
+    return ""
 
 
 def _build_run_result(

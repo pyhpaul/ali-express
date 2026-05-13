@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -23,15 +24,17 @@ def _read_dotenv(env_path: Path) -> dict[str, str]:
         return {}
 
     values: dict[str, str] = {}
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+    for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
         line = raw_line.strip()
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
         if not key:
             continue
-        stripped_value = value.strip()
+        stripped_value = _strip_inline_comment(value)
         if len(stripped_value) >= 2 and stripped_value[0] == stripped_value[-1] and stripped_value[0] in {"'", '"'}:
             stripped_value = stripped_value[1:-1]
         values[key] = stripped_value
@@ -82,9 +85,34 @@ def _normalize_base_url(raw_base_url: str) -> str:
     base_url = raw_base_url.strip().rstrip("/")
     if not base_url:
         return ""
-    if base_url.endswith("/v1"):
-        return base_url
-    return f"{base_url}/v1"
+    parsed = urlsplit(base_url)
+    path = parsed.path.rstrip("/")
+    if path:
+        return urlunsplit(parsed._replace(path=path))
+    return urlunsplit(parsed._replace(path="/v1"))
+
+
+def _strip_inline_comment(raw_value: str) -> str:
+    value = raw_value.strip()
+    if not value:
+        return ""
+
+    in_quote = ""
+    chars: list[str] = []
+    for index, char in enumerate(value):
+        if in_quote:
+            chars.append(char)
+            if char == in_quote:
+                in_quote = ""
+            continue
+        if char in {"'", '"'}:
+            in_quote = char
+            chars.append(char)
+            continue
+        if char == "#" and (index == 0 or value[index - 1].isspace()):
+            break
+        chars.append(char)
+    return "".join(chars).strip()
 
 
 def build_llm_messages(row: dict[str, str]) -> list[dict[str, str]]:
