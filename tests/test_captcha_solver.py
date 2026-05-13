@@ -165,3 +165,68 @@ def test_try_solve_captcha_returns_solver_result_for_slider(monkeypatch):
 
     assert captcha_solver.try_solve_captcha(page, timeout_seconds=12.0) is True
     assert calls == [12.0]
+
+
+def test_try_solve_captcha_waits_for_slider_on_verification_gate_before_solving(monkeypatch):
+    page = FakePage(
+        js_result=False,
+        url="https://www.aliexpress.com/verify?x5step=1",
+        title="验证码拦截",
+    )
+    state = {"probe_count": 0, "ticks": 0, "solve_calls": 0}
+
+    def fake_is_slider_captcha(page):
+        state["probe_count"] += 1
+        return state["probe_count"] >= 3
+
+    def fake_solve(page, timeout_seconds=30.0):
+        state["solve_calls"] += 1
+        return True
+
+    monkeypatch.setattr(captcha_solver, "is_slider_captcha", fake_is_slider_captcha)
+    monkeypatch.setattr(captcha_solver, "_solve_slider_captcha", fake_solve)
+    monkeypatch.setattr(captcha_solver.time, "monotonic", lambda: state["ticks"] * 0.1)
+    monkeypatch.setattr(captcha_solver.time, "sleep", lambda seconds: state.__setitem__("ticks", state["ticks"] + 1))
+
+    assert captcha_solver.try_solve_captcha(page, timeout_seconds=1.0) is True
+    assert state["solve_calls"] == 1
+    assert state["probe_count"] >= 3
+
+
+def test_solve_slider_captcha_waits_for_distance_before_dragging(monkeypatch):
+    page = FakePage(
+        js_result=True,
+        url="https://www.aliexpress.com/verify?x5step=1",
+        title="验证码拦截",
+        button=object(),
+    )
+    state = {"distance_calls": 0, "ticks": 0, "dragged": False, "cleared": False}
+    distances = [0, 0, 258]
+
+    def fake_distance(page):
+        state["distance_calls"] += 1
+        return distances[min(state["distance_calls"] - 1, len(distances) - 1)]
+
+    def fake_generate(distance):
+        return [{"x": distance, "y": 0, "delay": 0}]
+
+    def fake_drag(page, slider_button, trajectory):
+        state["dragged"] = True
+
+    def fake_sleep(seconds):
+        state["ticks"] += 1
+        if state["dragged"] and not state["cleared"]:
+            page.url = "https://www.aliexpress.com/item/1.html"
+            page.title = "product"
+            state["cleared"] = True
+
+    monkeypatch.setattr(captcha_solver, "_get_slider_distance", fake_distance)
+    monkeypatch.setattr(captcha_solver, "_generate_slider_trajectory", fake_generate)
+    monkeypatch.setattr(captcha_solver, "_perform_slider_drag", fake_drag)
+    monkeypatch.setattr(captcha_solver, "is_slider_captcha", lambda page: False)
+    monkeypatch.setattr(captcha_solver.time, "monotonic", lambda: state["ticks"] * 0.1)
+    monkeypatch.setattr(captcha_solver.time, "sleep", fake_sleep)
+
+    assert captcha_solver._solve_slider_captcha(page, timeout_seconds=1.0) is True
+    assert state["dragged"] is True
+    assert state["distance_calls"] >= 3

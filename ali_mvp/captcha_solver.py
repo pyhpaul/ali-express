@@ -18,6 +18,8 @@ _SLIDER_TRACK_ID = "nc_1_n1t"
 _SLIDER_BUTTON_ID = "nc_1_n1z"
 _CAPTCHA_CONTAINER_ID = "baxia-punish"
 _CAPTCHA_URL_MARKER = "_____tmd_____"
+_SLIDER_READY_WAIT_SECONDS = 1.5
+_SLIDER_READY_POLL_SECONDS = 0.1
 
 
 def is_slider_captcha(page: ChromiumPage) -> bool:
@@ -119,6 +121,16 @@ def _perform_slider_drag(page: ChromiumPage, slider_button, trajectory: list[dic
         actions.release(slider_button)
 
 
+def _wait_for_condition(condition, timeout_seconds: float) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        if condition():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_SLIDER_READY_POLL_SECONDS)
+
+
 def _is_verification_gate_page(page: ChromiumPage) -> bool:
     url = str(getattr(page, "url", "") or "")
     title = str(getattr(page, "title", "") or "")
@@ -140,10 +152,14 @@ def _is_verification_gate_page(page: ChromiumPage) -> bool:
 
 
 def _solve_slider_captcha(page: ChromiumPage, timeout_seconds: float = 30.0) -> bool:
-    distance = _get_slider_distance(page)
-    if distance <= 0:
+    ready_timeout = min(timeout_seconds, _SLIDER_READY_WAIT_SECONDS)
+    if not _wait_for_condition(
+        lambda: _get_slider_distance(page) > 0 and bool(page.ele(f"#{_SLIDER_BUTTON_ID}")),
+        ready_timeout,
+    ):
         return False
 
+    distance = _get_slider_distance(page)
     slider_button = page.ele(f"#{_SLIDER_BUTTON_ID}")
     if not slider_button:
         return False
@@ -163,7 +179,11 @@ def _solve_slider_captcha(page: ChromiumPage, timeout_seconds: float = 30.0) -> 
 
 
 def try_solve_captcha(page: ChromiumPage, timeout_seconds: float = 30.0) -> bool:
-    if not is_slider_captcha(page):
+    if _is_verification_gate_page(page):
+        ready_timeout = min(timeout_seconds, _SLIDER_READY_WAIT_SECONDS)
+        if not _wait_for_condition(lambda: is_slider_captcha(page), ready_timeout):
+            return False
+    elif not is_slider_captcha(page):
         return False
     try:
         return _solve_slider_captcha(page, timeout_seconds=timeout_seconds)
