@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ali_mvp.cli import build_output_dir, build_parser, run_postprocess, run_resume, run_scrape
+from ali_mvp.cli import build_output_dir, build_parser, run_llm_review, run_postprocess, run_resume, run_scrape
 from ali_mvp.filtering import FilterGroup
 
 
@@ -142,6 +142,104 @@ def test_scrape_parser_accepts_session_preflight_option():
     )
 
     assert args.session_preflight == "off"
+
+
+def test_llm_review_parser_accepts_required_run_dir():
+    parser = build_parser()
+
+    args = parser.parse_args(["llm-review", "--run-dir", "data/run-1"])
+
+    assert args.run_dir == "data/run-1"
+    assert args.llm_base_url == ""
+    assert args.llm_api_key == ""
+    assert args.llm_model == ""
+    assert args.llm_force is False
+    assert args.llm_max_items is None
+    assert args.func is run_llm_review
+
+
+def test_llm_review_parser_requires_run_dir():
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["llm-review"])
+
+
+def test_scrape_parser_accepts_llm_review_flags():
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "scrape",
+            "--keyword",
+            "women dress",
+            "--llm-review",
+            "--llm-base-url",
+            "http://localhost:11434/v1",
+            "--llm-api-key",
+            "secret",
+            "--llm-model",
+            "gpt-test",
+            "--llm-force",
+            "--llm-max-items",
+            "5",
+        ]
+    )
+
+    assert args.llm_review is True
+    assert args.llm_base_url == "http://localhost:11434/v1"
+    assert args.llm_api_key == "secret"
+    assert args.llm_model == "gpt-test"
+    assert args.llm_force is True
+    assert args.llm_max_items == 5
+
+
+def test_run_llm_review_rejects_non_positive_llm_max_items():
+    args = argparse.Namespace(
+        run_dir="data/run-1",
+        llm_base_url="",
+        llm_api_key="",
+        llm_model="",
+        llm_force=False,
+        llm_max_items=0,
+    )
+
+    with pytest.raises(SystemExit, match="--llm-max-items must be greater than 0"):
+        run_llm_review(args)
+
+
+def test_run_scrape_rejects_non_positive_llm_max_items():
+    args = argparse.Namespace(
+        keyword="women dress",
+        url=None,
+        category_url=None,
+        max_items=20,
+        output_dir="data",
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        pages=1,
+        blacklist_file=None,
+        reject_keyword=[],
+        browser_hardening="minimal",
+        proxy_provider="manual",
+        v2rayn_dir="",
+        proxy="",
+        proxy_file="",
+        max_blocks_per_proxy=2,
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
+        session_preflight="on",
+        llm_review=False,
+        llm_base_url="",
+        llm_api_key="",
+        llm_model="",
+        llm_force=False,
+        llm_max_items=-1,
+    )
+
+    with pytest.raises(SystemExit, match="--llm-max-items must be greater than 0"):
+        run_scrape(args)
 
 
 def test_run_scrape_defaults_missing_proxy_provider_fields_for_legacy_namespace(monkeypatch, tmp_path):

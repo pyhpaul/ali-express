@@ -86,6 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="on",
         help="Run session preflight checks before scraping.",
     )
+    _add_scrape_llm_review_args(scrape)
     scrape.set_defaults(func=run_scrape)
     postprocess = subparsers.add_parser(
         "postprocess",
@@ -127,6 +128,17 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--user-agent", default="", help="Optional fixed browser user agent override.")
     resume.add_argument("--accept-language", default="", help="Optional Accept-Language override.")
     resume.set_defaults(func=run_resume)
+    llm_review = subparsers.add_parser(
+        "llm-review",
+        help="Run LLM review scaffolding for an existing run.",
+    )
+    llm_review.add_argument(
+        "--run-dir",
+        required=True,
+        help="Existing run directory containing scrape outputs.",
+    )
+    _add_shared_llm_review_args(llm_review)
+    llm_review.set_defaults(func=run_llm_review)
     return parser
 
 
@@ -167,12 +179,18 @@ def run_resume(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
+def run_llm_review(args: argparse.Namespace) -> int:
+    _validate_llm_max_items(args)
+    raise NotImplementedError("llm-review implementation will be added in Task 5")
+
+
 def run_scrape(args: argparse.Namespace) -> int:
     source_type, source_value, url = _resolve_source(args)
     browser_hardening = getattr(args, "browser_hardening", "minimal")
     proxy_provider = getattr(args, "proxy_provider", "manual")
     v2rayn_dir = getattr(args, "v2rayn_dir", "")
     session_preflight = getattr(args, "session_preflight", "on")
+    _validate_llm_max_items(args)
     if args.max_items < 1:
         raise SystemExit("--max-items must be greater than 0")
     if args.pages is not None and args.pages < 1:
@@ -247,6 +265,38 @@ def _load_run_state_if_present(run_dir: Path):
     if not store.state_path.exists():
         return None
     return store.load_state()
+
+
+def _add_scrape_llm_review_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--llm-review",
+        action="store_true",
+        help="Enable LLM review scaffolding after scraping.",
+    )
+    _add_shared_llm_review_args(parser)
+
+
+def _add_shared_llm_review_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--llm-base-url", default="", help="Base URL for the configured LLM provider.")
+    parser.add_argument("--llm-api-key", default="", help="API key for the configured LLM provider.")
+    parser.add_argument("--llm-model", default="", help="Model identifier for the configured LLM provider.")
+    parser.add_argument(
+        "--llm-force",
+        action="store_true",
+        help="Force LLM review scaffolding even if prior outputs exist.",
+    )
+    parser.add_argument(
+        "--llm-max-items",
+        type=int,
+        default=None,
+        help="Optional maximum number of items to include in LLM review scaffolding.",
+    )
+
+
+def _validate_llm_max_items(args: argparse.Namespace) -> None:
+    llm_max_items = getattr(args, "llm_max_items", None)
+    if llm_max_items is not None and llm_max_items < 1:
+        raise SystemExit("--llm-max-items must be greater than 0")
 
 
 def build_output_dir(base_dir: Path, *, source_type: str, source_value: str, run_at: datetime) -> Path:

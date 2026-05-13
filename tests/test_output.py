@@ -5,12 +5,14 @@ import pytest
 from ali_mvp.output import (
     FILTER_AUDIT_FIELDS,
     FILTER_AUDIT_ZH_FIELDS,
+    LLM_REVIEW_FIELDS,
     PRODUCT_ZH_FIELDS,
     REVIEW_FIELDS,
     REVIEW_ONLY_FIELDS,
     read_csv_rows,
     write_dict_csv,
     write_filter_audit_csv,
+    write_llm_review_csv,
     write_products_csv,
     write_rank_csv,
 )
@@ -53,6 +55,40 @@ def test_review_fields_match_expected_columns_and_order():
         "warning_groups",
         "warning_terms",
         "warning_fields",
+    ]
+
+
+def test_llm_review_fields_match_expected_columns_and_order():
+    assert LLM_REVIEW_FIELDS == [
+        "source_type",
+        "source_value",
+        "title",
+        "product_url",
+        "image_url",
+        "price",
+        "entry_type",
+        "promotion_text",
+        "shop_name",
+        "attributes_text",
+        "description_text",
+        "detail_status",
+        "filter_decision",
+        "filter_stage",
+        "reject_groups",
+        "reject_terms",
+        "warning_groups",
+        "warning_terms",
+        "llm_decision",
+        "llm_reason",
+        "llm_risk_tags",
+        "llm_confidence",
+        "llm_summary_zh",
+        "llm_model",
+        "llm_provider",
+        "llm_prompt_version",
+        "llm_input_hash",
+        "llm_reviewed_at",
+        "llm_error",
     ]
 
 
@@ -273,3 +309,49 @@ def test_write_filter_audit_csv_writes_expected_columns(tmp_path):
     for field in FILTER_AUDIT_FIELDS:
         if field not in {"source_type", "source_value"}:
             assert written_rows[0][field] == ""
+
+
+def test_write_llm_review_csv_writes_expected_columns_and_rows(tmp_path):
+    path = tmp_path / "products_llm_review.csv"
+    rows = [
+        {
+            "source_type": "keyword",
+            "source_value": "home appliance accessories",
+            "title": "Shock pad",
+            "product_url": "https://example.test/item/1",
+            "image_url": "https://example.test/item/1.jpg",
+            "price": "$1",
+            "entry_type": "item_card",
+            "promotion_text": "Free shipping",
+            "shop_name": "Store A",
+            "attributes_text": '{"Type":"Pad"}',
+            "description_text": "Accessory",
+            "detail_status": "ok",
+            "filter_decision": "accepted",
+            "filter_stage": "accepted",
+            "reject_groups": "",
+            "reject_terms": "",
+            "warning_groups": "fragile",
+            "warning_terms": "battery",
+            "llm_decision": "review",
+            "llm_reason": "needs manual verification",
+            "llm_risk_tags": "battery",
+            "llm_confidence": "0.42",
+            "llm_summary_zh": "需要人工复核",
+            "llm_model": "gpt-test",
+            "llm_provider": "local",
+            "llm_prompt_version": "v1",
+            "llm_input_hash": "abc123",
+            "llm_reviewed_at": "2026-05-13T00:00:00Z",
+            "llm_error": "",
+        }
+    ]
+
+    write_llm_review_csv(path, rows)
+
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == LLM_REVIEW_FIELDS
+        written_rows = list(reader)
+
+    assert written_rows == rows

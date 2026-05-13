@@ -106,6 +106,38 @@ REVIEW_ONLY_FIELDS = [
     "review_note",
 ]
 
+LLM_REVIEW_FIELDS = [
+    "source_type",
+    "source_value",
+    "title",
+    "product_url",
+    "image_url",
+    "price",
+    "entry_type",
+    "promotion_text",
+    "shop_name",
+    "attributes_text",
+    "description_text",
+    "detail_status",
+    "filter_decision",
+    "filter_stage",
+    "reject_groups",
+    "reject_terms",
+    "warning_groups",
+    "warning_terms",
+    "llm_decision",
+    "llm_reason",
+    "llm_risk_tags",
+    "llm_confidence",
+    "llm_summary_zh",
+    "llm_model",
+    "llm_provider",
+    "llm_prompt_version",
+    "llm_input_hash",
+    "llm_reviewed_at",
+    "llm_error",
+]
+
 PRODUCT_ZH_FIELDS = PRODUCT_FIELDS + [
     "title_zh",
     "shop_name_zh",
@@ -141,6 +173,10 @@ def write_rank_csv(path: Path, rows: Iterable[RankRecord]) -> None:
 
 def write_filter_audit_csv(path: Path, rows: Iterable[dict[str, str]]) -> None:
     write_dict_csv(path, FILTER_AUDIT_FIELDS, rows)
+
+
+def write_llm_review_csv(path: Path, rows: Iterable[Mapping[str, object]]) -> None:
+    write_dict_csv(path, LLM_REVIEW_FIELDS, rows)
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
