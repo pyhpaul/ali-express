@@ -94,6 +94,7 @@ def _llm_row(base_row: dict[str, str], *, config: LlmConfig, decision: str = "ke
         "llm_summary_zh": f"{decision} summary",
         "llm_model": config.model,
         "llm_provider": config.provider,
+        "llm_base_url": config.base_url,
         "llm_prompt_version": LLM_PROMPT_VERSION,
         "llm_input_hash": compute_llm_input_hash(base_row),
         "llm_reviewed_at": "2026-05-13T00:00:00Z",
@@ -209,6 +210,40 @@ def test_run_llm_review_for_dir_reruns_when_existing_provider_differs(tmp_path):
     assert result.reviewed_count == 1
     assert result.skipped_count == 0
     assert rows[0]["llm_provider"] == config.provider
+    assert rows[0]["llm_decision"] == "keep"
+
+
+def test_run_llm_review_for_dir_reruns_when_existing_base_url_differs(tmp_path):
+    run_dir = tmp_path
+    config = _config()
+    review_row = _review_row(product_url="https://example.test/item/1", title="Adapter shell")
+    _write_products_review_csv(run_dir, [review_row])
+    existing_config = LlmConfig(
+        base_url="http://localhost:9999/custom-endpoint",
+        api_key=config.api_key,
+        model=config.model,
+        provider=config.provider,
+    )
+    write_llm_review_csv(run_dir / "products_llm_review.csv", [_llm_row(review_row, config=existing_config, decision="drop")])
+    calls = []
+
+    def reviewer(row, _config):
+        calls.append(row["product_url"])
+        return {
+            "decision": "keep",
+            "reason": "endpoint changed",
+            "risk_tags": [],
+            "confidence": "medium",
+            "summary_zh": "endpoint changed",
+        }
+
+    result = run_llm_review_for_dir(run_dir, config=config, reviewer=reviewer)
+
+    rows = read_csv_rows(run_dir / "products_llm_review.csv")
+    assert calls == [review_row["product_url"]]
+    assert result.reviewed_count == 1
+    assert result.skipped_count == 0
+    assert rows[0]["llm_base_url"] == config.base_url
     assert rows[0]["llm_decision"] == "keep"
 
 
@@ -377,3 +412,25 @@ def test_run_llm_review_for_dir_does_not_reuse_existing_row_with_decision_and_er
     assert result.skipped_count == 0
     assert rows[0]["llm_decision"] == "drop"
     assert rows[0]["llm_error"] == ""
+
+
+def test_run_llm_review_for_dir_normalizes_common_risk_tag_aliases(tmp_path):
+    run_dir = tmp_path
+    config = _config()
+    review_row = _review_row(product_url="https://example.test/item/1", title="Adapter shell")
+    _write_products_review_csv(run_dir, [review_row])
+
+    def reviewer(_row, _config):
+        return {
+            "decision": "drop",
+            "reason": "active control component",
+            "risk_tags": ["Controller", "PCB", "circuit board", "Promo Bundle", "Wi-Fi", "Not accessory"],
+            "confidence": "high",
+            "summary_zh": "控制和电子类",
+        }
+
+    result = run_llm_review_for_dir(run_dir, config=config, reviewer=reviewer)
+
+    rows = read_csv_rows(run_dir / "products_llm_review.csv")
+    assert result.reviewed_count == 1
+    assert rows[0]["llm_risk_tags"] == "controller|chip|promo_bundle|wireless|not_accessory"

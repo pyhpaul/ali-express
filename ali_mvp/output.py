@@ -132,6 +132,7 @@ LLM_REVIEW_FIELDS = [
     "llm_summary_zh",
     "llm_model",
     "llm_provider",
+    "llm_base_url",
     "llm_prompt_version",
     "llm_input_hash",
     "llm_reviewed_at",
