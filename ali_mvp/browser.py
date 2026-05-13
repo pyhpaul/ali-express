@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlparse
 
 from DrissionPage import ChromiumOptions, ChromiumPage
 
-from .captcha_solver import try_solve_captcha
+from .captcha_solver import try_solve_captcha_with_result
 
 
 PRODUCT_SCRIPT = r"""
@@ -679,7 +679,10 @@ def enrich_single_product_detail(page: ChromiumPage, product: dict[str, object])
         detail_opened = True
         detail_page = _resolve_detail_page_context(page, product)
         if _is_captcha_page(str(detail_page.url), str(getattr(detail_page, "title", ""))):
-            if not _wait_for_captcha_resolution(detail_page):
+            solved, diagnostic = _coerce_captcha_resolution_result(_wait_for_captcha_resolution(detail_page))
+            if not solved:
+                if diagnostic:
+                    product["_captchaDiagnostic"] = diagnostic
                 product["detailStatus"] = "captcha_blocked"
                 return "captcha_blocked"
         raw_detail = detail_page.run_js(DETAIL_FIELDS_SCRIPT)
@@ -730,27 +733,69 @@ def _wait_for_captcha_resolution(
     page: ChromiumPage,
     timeout_seconds: float = 60.0,
     interval_seconds: float = 1.0,
-) -> bool:
+) -> tuple[bool, dict[str, object] | None]:
     deadline = time.monotonic() + timeout_seconds
     solver_attempted = False
+    initial_page_url = str(getattr(page, "url", "") or "")
+    diagnostic: dict[str, object] | None = None
     while True:
         now = time.monotonic()
         if now >= deadline:
             break
         if not _is_captcha_page(str(getattr(page, "url", "")), str(getattr(page, "title", ""))):
-            return True
+            return True, diagnostic
         if not solver_attempted:
             solver_attempted = True
             solve_timeout = max(0.0, min(30.0, deadline - now))
-            if solve_timeout > 0 and try_solve_captcha(page, timeout_seconds=solve_timeout):
-                _wait_for_page_ready(page)
-                return True
+            if solve_timeout > 0:
+                solved, solver_diagnostic = _try_solve_captcha_with_result(page, timeout_seconds=solve_timeout)
+                diagnostic = _detail_captcha_diagnostic(solver_diagnostic, initial_page_url)
+                if solved:
+                    _wait_for_page_ready(page)
+                    return True, diagnostic
+            else:
+                diagnostic = None
             now = time.monotonic()
             if now >= deadline:
                 break
         time.sleep(interval_seconds)
         _wait_for_page_ready(page)
-    return not _is_captcha_page(str(getattr(page, "url", "")), str(getattr(page, "title", "")))
+    solved = not _is_captcha_page(str(getattr(page, "url", "")), str(getattr(page, "title", "")))
+    return solved, diagnostic
+
+
+def _try_solve_captcha_with_result(
+    page: ChromiumPage,
+    *,
+    timeout_seconds: float,
+) -> tuple[bool, dict[str, object] | None]:
+    result = try_solve_captcha_with_result(page, timeout_seconds=timeout_seconds)
+    if isinstance(result, tuple) and len(result) == 2:
+        solved, diagnostic = result
+    else:
+        solved, diagnostic = bool(result), None
+    return bool(solved), diagnostic if isinstance(diagnostic, dict) else None
+
+
+def _detail_captcha_diagnostic(
+    diagnostic: dict[str, object] | None,
+    page_url: str,
+) -> dict[str, object] | None:
+    if not isinstance(diagnostic, dict):
+        return None
+    enriched = dict(diagnostic)
+    enriched["stage"] = "detail"
+    enriched["page_url"] = page_url
+    return enriched
+
+
+def _coerce_captcha_resolution_result(
+    result: object,
+) -> tuple[bool, dict[str, object] | None]:
+    if isinstance(result, tuple) and len(result) == 2:
+        solved, diagnostic = result
+        return bool(solved), diagnostic if isinstance(diagnostic, dict) else None
+    return bool(result), None
 
 
 def _mark_detail_status(products: list[dict[str, object]], status: str) -> None:

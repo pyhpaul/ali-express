@@ -398,7 +398,19 @@ def test_enrich_single_product_detail_marks_captcha_blocked(monkeypatch):
         or True,
     )
     monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
-    monkeypatch.setattr(browser, "_wait_for_captcha_resolution", lambda page, timeout_seconds=60.0, interval_seconds=1.0: False)
+    monkeypatch.setattr(
+        browser,
+        "_wait_for_captcha_resolution",
+        lambda page, timeout_seconds=60.0, interval_seconds=1.0: (
+            False,
+            {
+                "stage": "detail",
+                "page_url": "https://www.aliexpress.com//item/1.html/_____tmd_____/punish?x5step=1",
+                "result": "failed",
+                "fail_reason": "gate_not_cleared",
+            },
+        ),
+    )
 
     product = {"url": "https://www.aliexpress.com/item/1.html", "title": "blocked first"}
 
@@ -406,6 +418,12 @@ def test_enrich_single_product_detail_marks_captcha_blocked(monkeypatch):
 
     assert status == "captcha_blocked"
     assert product["detailStatus"] == "captcha_blocked"
+    assert product["_captchaDiagnostic"] == {
+        "stage": "detail",
+        "page_url": "https://www.aliexpress.com//item/1.html/_____tmd_____/punish?x5step=1",
+        "result": "failed",
+        "fail_reason": "gate_not_cleared",
+    }
     assert product.get("attributesText", "") == ""
     assert product.get("descriptionText", "") == ""
 
@@ -664,7 +682,19 @@ def test_enrich_product_details_stops_after_captcha_and_marks_status(monkeypatch
         or True,
     )
     monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
-    monkeypatch.setattr(browser, "_wait_for_captcha_resolution", lambda page, timeout_seconds=60.0, interval_seconds=1.0: False)
+    monkeypatch.setattr(
+        browser,
+        "_wait_for_captcha_resolution",
+        lambda page, timeout_seconds=60.0, interval_seconds=1.0: (
+            False,
+            {
+                "stage": "detail",
+                "page_url": "https://www.aliexpress.com//item/1.html/_____tmd_____/punish?x5step=1",
+                "result": "failed",
+                "fail_reason": "gate_not_cleared",
+            },
+        ),
+    )
 
     products = [
         {"url": "https://www.aliexpress.com/item/1.html", "title": "blocked first"},
@@ -676,6 +706,7 @@ def test_enrich_product_details_stops_after_captcha_and_marks_status(monkeypatch
 
     assert page.calls == ["https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"]
     assert products[0]["detailStatus"] == "captcha_blocked"
+    assert products[0]["_captchaDiagnostic"]["stage"] == "detail"
     assert products[0].get("attributesText", "") == ""
     assert products[0].get("descriptionText", "") == ""
     assert products[1]["detailStatus"] == "detail_skipped_after_captcha"
@@ -721,7 +752,7 @@ def test_enrich_product_details_resumes_when_captcha_is_cleared(monkeypatch):
     def fake_wait_for_captcha(page, timeout_seconds=60.0, interval_seconds=1.0):
         page.url = page.current_url
         page.title = "detail"
-        return True
+        return True, None
 
     monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(browser, "_open_detail_from_listing_context", fake_open)
@@ -1144,9 +1175,18 @@ def test_wait_for_captcha_resolution_tries_solver_once_and_returns_true_on_succe
         calls["solve"] += 1
         target.url = "https://www.aliexpress.com/item/1.html"
         target.title = "detail"
-        return True
+        return True, {
+            "result": "solved",
+            "fail_reason": "",
+        }
 
-    monkeypatch.setattr(browser, "try_solve_captcha", fake_solve)
+    monkeypatch.setattr(
+        browser,
+        "try_solve_captcha",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("old API should not be used")),
+        raising=False,
+    )
+    monkeypatch.setattr(browser, "try_solve_captcha_with_result", fake_solve, raising=False)
     monkeypatch.setattr(
         browser,
         "_wait_for_page_ready",
@@ -1154,7 +1194,11 @@ def test_wait_for_captcha_resolution_tries_solver_once_and_returns_true_on_succe
     )
     monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
 
-    assert browser._wait_for_captcha_resolution(page, timeout_seconds=2.0, interval_seconds=0.1) is True
+    solved, diagnostic = browser._wait_for_captcha_resolution(page, timeout_seconds=2.0, interval_seconds=0.1)
+
+    assert solved is True
+    assert diagnostic["stage"] == "detail"
+    assert diagnostic["page_url"] == "https://www.aliexpress.com//item/1.html/_____tmd_____/punish?x5step=1"
     assert calls["solve"] == 1
     assert calls["ready"] == 1
 
@@ -1172,7 +1216,20 @@ def test_wait_for_captcha_resolution_keeps_existing_timeout_path_when_solver_fai
     monkeypatch.setattr(
         browser,
         "try_solve_captcha",
-        lambda target, timeout_seconds=30.0: calls.__setitem__("solve", calls["solve"] + 1) or False,
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("old API should not be used")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        browser,
+        "try_solve_captcha_with_result",
+        lambda target, timeout_seconds=30.0: (
+            calls.__setitem__("solve", calls["solve"] + 1) or False,
+            {
+                "result": "failed",
+                "fail_reason": "gate_not_cleared",
+            },
+        ),
+        raising=False,
     )
     monkeypatch.setattr(
         browser,
@@ -1182,7 +1239,13 @@ def test_wait_for_captcha_resolution_keeps_existing_timeout_path_when_solver_fai
     monkeypatch.setattr(browser.time, "sleep", lambda seconds: calls.__setitem__("sleep", calls["sleep"] + 1))
     monkeypatch.setattr(browser.time, "monotonic", lambda: next(moments))
 
-    assert browser._wait_for_captcha_resolution(page, timeout_seconds=1.0, interval_seconds=0.1) is False
+    solved, diagnostic = browser._wait_for_captcha_resolution(page, timeout_seconds=1.0, interval_seconds=0.1)
+
+    assert solved is False
+    assert diagnostic["stage"] == "detail"
+    assert diagnostic["page_url"] == "https://www.aliexpress.com//item/1.html/_____tmd_____/punish?x5step=1"
+    assert diagnostic["result"] == "failed"
+    assert diagnostic["fail_reason"] == "gate_not_cleared"
     assert calls["solve"] == 1
     assert calls["sleep"] == 1
     assert calls["ready"] == 1
@@ -1201,7 +1264,20 @@ def test_wait_for_captcha_resolution_does_not_extra_wait_after_solver_consumes_b
     monkeypatch.setattr(
         browser,
         "try_solve_captcha",
-        lambda target, timeout_seconds=30.0: calls.__setitem__("solve", calls["solve"] + 1) or False,
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("old API should not be used")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        browser,
+        "try_solve_captcha_with_result",
+        lambda target, timeout_seconds=30.0: (
+            calls.__setitem__("solve", calls["solve"] + 1) or False,
+            {
+                "result": "failed",
+                "fail_reason": "gate_not_cleared",
+            },
+        ),
+        raising=False,
     )
     monkeypatch.setattr(
         browser,
@@ -1211,7 +1287,10 @@ def test_wait_for_captcha_resolution_does_not_extra_wait_after_solver_consumes_b
     monkeypatch.setattr(browser.time, "sleep", lambda seconds: calls.__setitem__("sleep", calls["sleep"] + 1))
     monkeypatch.setattr(browser.time, "monotonic", lambda: next(moments))
 
-    assert browser._wait_for_captcha_resolution(page, timeout_seconds=1.0, interval_seconds=0.1) is False
+    solved, diagnostic = browser._wait_for_captcha_resolution(page, timeout_seconds=1.0, interval_seconds=0.1)
+
+    assert solved is False
+    assert diagnostic["stage"] == "detail"
     assert calls["solve"] == 1
     assert calls["sleep"] == 0
     assert calls["ready"] == 0
