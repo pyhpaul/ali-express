@@ -40,6 +40,7 @@ Recommended default for a single-account workflow:
 
 - keep one logged-in profile stable
 - keep one exit path stable
+- keep one stable browser major version / UA pair per account
 - do not enable proxy-pool rotation unless you explicitly need a fallback path
 - if you do not pass `--proxy` or `--proxy-file`, the default `--proxy-provider manual` mode runs without a proxy pool
 - treat `--proxy-provider v2rayn` as an opt-in fallback mode, not the default path
@@ -63,6 +64,8 @@ Behavior in this phase:
 - generates per-node sidecar `xray` configs under `<run_dir>/proxy_runtime`
 - probes each local socks5 endpoint before opening the browser
 - picks one healthy endpoint for the current run
+- attempts to restore the last persisted proxy selection on `resume` when that proxy is still eligible
+- proxy health cooldown is fallback memory, not a periodic rotation scheduler
 - cleans sidecar processes on exit
 
 Current limitations:
@@ -108,6 +111,13 @@ Resume with temporary proxy or browser identity override:
 ```bash
 python -m ali_mvp resume --run-dir data/home-appliance-accessories/20260511_120000 --proxy http://127.0.0.1:8080 --user-agent "ua-fixed" --accept-language "en-US,en;q=0.9"
 ```
+
+Notes for `resume`:
+
+- `resume` attempts to restore the last persisted proxy selection when that proxy is still eligible after health / cooldown filtering
+- if the persisted proxy is no longer eligible, `resume` falls back to another eligible proxy
+- proxy overrides apply when a new browser session is opened for `resume`
+- `resume` does not do live proxy swap inside one browser session after the browser is already open
 
 Detail enrichment adds these columns to `products.csv`:
 
@@ -403,17 +413,23 @@ This MVP is for low-frequency validation. It now supports a minimal sequential p
 Current anti-risk status:
 
 - Done in this phase:
+  - session preflight + warm-up
+  - session risk persistence
+  - proxy health / cooldown
+  - browser identity warning
   - optional browser pacing / stealth hardening via `--browser-hardening off|minimal`
   - single-proxy or proxy-file based sequential rotation via `--proxy`, `--proxy-file`, and `--max-blocks-per-proxy`
   - fixed browser identity per run via `--user-agent` and `--accept-language`
+  - preflight stops the run before scraping when AliExpress is on login, phone verification, or captcha pages
   - captcha page detection
   - manual captcha wait-and-resume flow
   - graceful detail-status fallback when captcha is not cleared
 - Not done in this phase:
   - automatic slider / captcha solving
+  - aggressive header / fingerprint pool rotation
   - proxy health scoring or adaptive pool management
-  - advanced fingerprint / header rotation strategy
   - fully automated recovery under sustained risk-control pressure
+  - live proxy swap inside one browser session
 
 ## Manual Validation
 

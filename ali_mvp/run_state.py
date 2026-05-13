@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from collections.abc import Mapping
 
 from .scoring import ProductRecord
 
@@ -29,6 +30,7 @@ class RunManifest:
     max_blocks_per_proxy: int = 0
     user_agent: str = ""
     accept_language: str = ""
+    session_preflight: str = "on"
     created_at: str = ""
 
     @classmethod
@@ -53,6 +55,7 @@ class RunManifest:
             max_blocks_per_proxy=payload.get("max_blocks_per_proxy", 0),
             user_agent=payload.get("user_agent", ""),
             accept_language=payload.get("accept_language", ""),
+            session_preflight=_normalize_session_preflight(payload.get("session_preflight", "on")),
             created_at=payload.get("created_at", ""),
         )
 
@@ -76,6 +79,12 @@ class RunState:
     block_events_on_current_proxy: int = 0
     last_block_reason: str = ""
     last_blocked_url: str = ""
+    session_risk_level: str = "low"
+    last_session_preflight_status: str = ""
+    consecutive_captcha_count: int = 0
+    last_session_ok_at: str = ""
+    cooldown_until: str = ""
+    identity_warning: dict[str, Any] = field(default_factory=dict)
     last_error: str = ""
 
     @classmethod
@@ -95,6 +104,12 @@ class RunState:
             block_events_on_current_proxy=payload.get("block_events_on_current_proxy", 0),
             last_block_reason=payload.get("last_block_reason", ""),
             last_blocked_url=payload.get("last_blocked_url", ""),
+            session_risk_level=payload.get("session_risk_level", "low"),
+            last_session_preflight_status=payload.get("last_session_preflight_status", ""),
+            consecutive_captcha_count=payload.get("consecutive_captcha_count", 0),
+            last_session_ok_at=payload.get("last_session_ok_at", ""),
+            cooldown_until=payload.get("cooldown_until", ""),
+            identity_warning=_deserialize_identity_warning(payload),
             last_error=payload.get("last_error", ""),
         )
 
@@ -114,6 +129,12 @@ class RunState:
             "block_events_on_current_proxy": self.block_events_on_current_proxy,
             "last_block_reason": self.last_block_reason,
             "last_blocked_url": self.last_blocked_url,
+            "session_risk_level": self.session_risk_level,
+            "last_session_preflight_status": self.last_session_preflight_status,
+            "consecutive_captcha_count": self.consecutive_captcha_count,
+            "last_session_ok_at": self.last_session_ok_at,
+            "cooldown_until": self.cooldown_until,
+            "identity_warning": dict(self.identity_warning),
             "last_error": self.last_error,
         }
 
@@ -146,7 +167,7 @@ class RunStateStore:
         return self._read_json(self.summary_path)
 
     def _build_summary(self, state: RunState) -> dict[str, Any]:
-        return {
+        summary = {
             "status": state.status,
             "current_listing_page": state.current_listing_page,
             "accepted_count": state.accepted_count,
@@ -154,6 +175,9 @@ class RunStateStore:
             "last_blocked_url": state.last_blocked_url,
             "resume_recommended": state.status in {"blocked", "failed"},
         }
+        if state.identity_warning:
+            summary["identity_warning"] = dict(state.identity_warning)
+        return summary
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -191,6 +215,31 @@ def _deserialize_pending_detail_queue(payload: Any) -> list[dict[str, Any]]:
     return queue
 
 
+def _deserialize_identity_warning(payload: dict[str, Any]) -> dict[str, Any]:
+    warning = payload.get("identity_warning")
+    if isinstance(warning, dict):
+        code = str(warning.get("code") or "")
+        if not code:
+            return {}
+        configured = warning.get("configured")
+        effective = warning.get("effective")
+        if not isinstance(configured, Mapping) or not isinstance(effective, Mapping):
+            return {}
+        return {
+            "code": code,
+            "configured": dict(configured),
+            "effective": dict(effective),
+        }
+    legacy_code = str(payload.get("identity_warning_code") or "")
+    if not legacy_code:
+        return {}
+    return {
+        "code": legacy_code,
+        "configured": {},
+        "effective": {},
+    }
+
+
 def _normalize_browser_hardening(value: Any) -> str:
     if value in {"off", "minimal"}:
         return value
@@ -201,3 +250,9 @@ def _normalize_proxy_provider(value: Any) -> str:
     if value in {"manual", "v2rayn"}:
         return str(value)
     return "manual"
+
+
+def _normalize_session_preflight(value: Any) -> str:
+    if value in {"on", "off"}:
+        return str(value)
+    return "on"

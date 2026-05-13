@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+import json
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from .browser import (
     _attach_listing_context,
     advance_listing_page,
+    collect_browser_identity,
     collect_listing_page_products,
     dedupe_listing_products,
     enrich_single_product_detail,
     open_listing_page,
 )
+from .browser_identity import BrowserIdentityWarning, validate_browser_identity
 from .extractor import normalize_products
 from .filtering import FilterGroup, filter_products, load_filter_groups, prefilter_listing_products
 from .output import REVIEW_FIELDS, read_csv_rows, write_dict_csv, write_filter_audit_csv, write_products_csv, write_rank_csv
@@ -19,6 +23,8 @@ from .proxy_pool import NoHealthyProxyError, ProxyPool
 from .review import build_review_rows
 from .run_state import RunManifest, RunState, RunStateStore
 from .scoring import ProductRecord, aggregate_rank, parse_count, parse_float
+from .session_guard import SessionPreflightResult
+from .session_guard import run_session_preflight
 
 
 @dataclass(frozen=True)
@@ -26,40 +32,100 @@ class RunResult:
     exit_code: int
     accepted_count: int
     blocked: bool = False
+    blocked_proxy_key: str = field(default="", compare=False)
 
 
 def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir: Path) -> RunResult:
     store = RunStateStore(run_dir)
     store.save_manifest(manifest)
+    existing_state = store.load_state()
+    session_seed_state = RunState(
+        status="running",
+        session_risk_level=existing_state.session_risk_level,
+        last_session_preflight_status=existing_state.last_session_preflight_status,
+        consecutive_captcha_count=existing_state.consecutive_captcha_count,
+        last_session_ok_at=existing_state.last_session_ok_at,
+        cooldown_until=existing_state.cooldown_until,
+    )
+
+    if _is_session_cooldown_active(cooldown_until=existing_state.cooldown_until, now_iso=manifest.created_at):
+        failed_state = replace(
+            session_seed_state,
+            status="failed",
+            last_error="session_cooldown_active",
+            last_block_reason="session_cooldown_active",
+            last_blocked_url=manifest.url,
+        )
+        _save_failed_state(store, failed_state)
+        _write_outputs(run_dir, failed_state.accepted_products, failed_state.audit_rows)
+        return RunResult(exit_code=6, accepted_count=0, blocked=False)
+
     try:
         proxy_pool = ProxyPool.from_manifest(manifest=manifest, run_dir=run_dir)
     except Exception as error:
-        failed_state = RunState(status="failed", last_error=str(error))
-        store.save_state(failed_state)
-        store.save_summary(failed_state)
+        failed_state = replace(session_seed_state, status="failed", last_error=str(error), identity_warning={})
+        _save_failed_state(store, failed_state)
         _write_outputs(run_dir, [], [])
         return RunResult(exit_code=5, accepted_count=0)
 
     try:
-        page = open_listing_page(
-            manifest.url,
-            user_data_dir=manifest.user_data_dir,
-            port=manifest.port,
-            browser_hardening=manifest.browser_hardening,
-            proxy=proxy_pool.current(),
-            user_agent=manifest.user_agent,
-            accept_language=manifest.accept_language,
-        )
-        return _run_scrape_from_state(
+        try:
+            page = open_listing_page(
+                manifest.url,
+                user_data_dir=manifest.user_data_dir,
+                port=manifest.port,
+                browser_hardening=manifest.browser_hardening,
+                proxy=proxy_pool.current(),
+                user_agent=manifest.user_agent,
+                accept_language=manifest.accept_language,
+            )
+        except Exception as error:
+            failed_state = replace(session_seed_state, status="failed", last_error=str(error), identity_warning={})
+            _save_failed_state(store, failed_state)
+            _write_outputs(run_dir, failed_state.accepted_products, failed_state.audit_rows)
+            return RunResult(exit_code=5, accepted_count=0, blocked=False)
+        identity_warning = _collect_identity_warning(manifest=manifest, page=page)
+        session_seed_state = _with_identity_warning(session_seed_state, identity_warning)
+        preflight = _resolve_session_preflight(manifest=manifest, page=page)
+        if preflight is None:
+            running_state = replace(session_seed_state, status="running", last_session_preflight_status="skipped")
+        else:
+            running_state = _next_session_state(
+                existing=session_seed_state,
+                preflight_status=preflight.status,
+                risk_level=preflight.risk_level,
+                now_iso=manifest.created_at,
+            )
+        if preflight is not None and preflight.status != "ready":
+            failed_state = replace(
+                running_state,
+                status="failed",
+                last_error=preflight.status,
+                last_block_reason=preflight.status,
+                last_blocked_url=str(getattr(page, "url", "") or manifest.url),
+            )
+            _save_failed_state(store, failed_state)
+            _write_outputs(run_dir, failed_state.accepted_products, failed_state.audit_rows)
+            return RunResult(exit_code=6, accepted_count=failed_state.accepted_count, blocked=False)
+        store.save_state(running_state)
+        store.save_summary(running_state)
+        result = _run_scrape_from_state(
             manifest=manifest,
             groups=groups,
             run_dir=run_dir,
             store=store,
             proxy_pool=proxy_pool,
             page=page,
-            state=RunState(status="running"),
+            state=running_state,
             start_page=1,
         )
+        _record_proxy_health(
+            proxy_pool=proxy_pool,
+            state=store.load_state(),
+            blocked=result.blocked,
+            proxy_key=result.blocked_proxy_key,
+        )
+        return result
     finally:
         proxy_pool.close()
 
@@ -124,9 +190,8 @@ def resume_scrape(
     try:
         proxy_pool = ProxyPool.from_manifest(manifest=proxy_manifest, run_dir=run_dir)
     except Exception as error:
-        failed_state = replace(state, status="failed", last_error=str(error))
-        store.save_state(failed_state)
-        store.save_summary(failed_state)
+        failed_state = replace(state, status="failed", last_error=str(error), identity_warning={})
+        _save_failed_state(store, failed_state)
         _write_outputs(run_dir, failed_state.accepted_products, failed_state.audit_rows)
         return RunResult(exit_code=5, accepted_count=failed_state.accepted_count, blocked=False)
 
@@ -137,17 +202,24 @@ def resume_scrape(
     )
 
     try:
-        page = open_listing_page(
-            manifest.url,
-            user_data_dir=manifest.user_data_dir,
-            port=manifest.port,
-            browser_hardening=manifest.browser_hardening,
-            proxy=proxy_pool.current(),
-            user_agent=effective_user_agent,
-            accept_language=effective_accept_language,
-        )
+        try:
+            page = open_listing_page(
+                manifest.url,
+                user_data_dir=manifest.user_data_dir,
+                port=manifest.port,
+                browser_hardening=manifest.browser_hardening,
+                proxy=proxy_pool.current(),
+                user_agent=effective_user_agent,
+                accept_language=effective_accept_language,
+            )
+        except Exception as error:
+            failed_state = replace(state, status="failed", last_error=str(error), identity_warning={})
+            _save_failed_state(store, failed_state)
+            _write_outputs(run_dir, failed_state.accepted_products, failed_state.audit_rows)
+            return RunResult(exit_code=5, accepted_count=failed_state.accepted_count, blocked=False)
+        identity_warning = _collect_identity_warning(manifest=proxy_manifest, page=page)
 
-        resumed_state = state
+        resumed_state = _with_identity_warning(state, identity_warning)
         review_context_rows = _load_existing_review_context_rows(run_dir)
         pending_queue = list(state.pending_detail_queue)
         if pending_queue:
@@ -169,6 +241,12 @@ def resume_scrape(
                 review_context_rows=review_context_rows,
             )
             if blocked:
+                _record_proxy_health(
+                    proxy_pool=proxy_pool,
+                    state=resumed_state,
+                    blocked=True,
+                    proxy_key=proxy_pool.current_key(),
+                )
                 return RunResult(
                     exit_code=3,
                     accepted_count=resumed_state.accepted_count,
@@ -185,13 +263,14 @@ def resume_scrape(
                 completed_state.audit_rows,
                 review_context_rows=review_context_rows,
             )
+            _record_proxy_health(proxy_pool=proxy_pool, state=completed_state, blocked=False)
             return RunResult(
                 exit_code=_completed_exit_code(completed_state.accepted_count),
                 accepted_count=completed_state.accepted_count,
                 blocked=False,
             )
 
-        return _run_scrape_from_state(
+        result = _run_scrape_from_state(
             manifest=manifest,
             groups=groups,
             run_dir=run_dir,
@@ -201,6 +280,13 @@ def resume_scrape(
             state=resumed_state,
             start_page=max(1, resumed_state.current_listing_page + 1),
         )
+        _record_proxy_health(
+            proxy_pool=proxy_pool,
+            state=store.load_state(),
+            blocked=result.blocked,
+            proxy_key=result.blocked_proxy_key,
+        )
+        return result
     finally:
         proxy_pool.close()
 
@@ -237,7 +323,7 @@ def _resume_pending_details(
             blocked_queue = [raw_product]
             blocked_queue.extend(dict(item) for item in pending_queue[index + 1 :])
             blocked_state = replace(
-                state,
+                _with_session_fields(state, state),
                 status="blocked",
                 normalized_count=normalized_count + normalized_delta,
                 accepted_count=len(accepted_products),
@@ -259,7 +345,7 @@ def _resume_pending_details(
     )
     updated_review_context_rows = _merge_review_context_rows(updated_review_context_rows, normalized_rows)
     resumed_state = replace(
-        state,
+        _with_session_fields(state, state),
         status="running",
         normalized_count=normalized_count + normalized_delta,
         accepted_products=accepted_products,
@@ -342,7 +428,7 @@ def _run_scrape_from_state(
 
     if current_page > 1 and not _move_to_listing_page(page, current_page):
         failed_state = replace(
-            state,
+            _with_session_fields(state, state),
             status="failed",
             last_block_reason="listing_page_unreachable",
             last_blocked_url=str(getattr(page, "url", "") or manifest.url),
@@ -407,7 +493,9 @@ def _run_scrape_from_state(
             normalized=normalized,
         )
 
-        checkpoint_state = RunState(
+        checkpoint_state = _with_session_fields(
+            state,
+            RunState(
             status="blocked" if blocked else "running",
             current_listing_page=current_page,
             raw_products_count=raw_products_count,
@@ -422,8 +510,10 @@ def _run_scrape_from_state(
             block_events_on_current_proxy=proxy_pool.block_events_on_current,
             last_block_reason=last_block_reason,
             last_blocked_url=last_blocked_url,
+            ),
         )
         if blocked:
+            blocked_proxy_key = proxy_pool.current_key()
             proxy_pool.mark_blocked()
             checkpoint_state = replace(
                 checkpoint_state,
@@ -441,7 +531,12 @@ def _run_scrape_from_state(
                 audit_rows,
                 review_context_rows=review_context_rows,
             )
-            return RunResult(exit_code=3, accepted_count=len(accepted_products), blocked=True)
+            return RunResult(
+                exit_code=3,
+                accepted_count=len(accepted_products),
+                blocked=True,
+                blocked_proxy_key=blocked_proxy_key,
+            )
 
         if len(accepted_products) >= manifest.max_items:
             break
@@ -452,7 +547,9 @@ def _run_scrape_from_state(
             break
         current_page = next_page
 
-    final_state = RunState(
+    final_state = _with_session_fields(
+        state,
+        RunState(
         status="completed",
         current_listing_page=current_page,
         raw_products_count=raw_products_count,
@@ -467,6 +564,7 @@ def _run_scrape_from_state(
         block_events_on_current_proxy=proxy_pool.block_events_on_current,
         last_block_reason="",
         last_blocked_url="",
+        ),
     )
     store.save_state(final_state)
     store.save_summary(final_state)
@@ -480,6 +578,111 @@ def _run_scrape_from_state(
         exit_code=_completed_exit_code(len(accepted_products)),
         accepted_count=len(accepted_products),
     )
+
+
+def _save_failed_state(store: RunStateStore, state: RunState) -> None:
+    store.save_state(state)
+    store.save_summary(state)
+    if not state.last_error:
+        return
+    summary = store.load_summary()
+    summary["last_error"] = state.last_error
+    with store.summary_path.open("w", encoding="utf-8") as handle:
+        json.dump(summary, handle, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def _next_session_state(*, existing: RunState, preflight_status: str, risk_level: str, now_iso: str) -> RunState:
+    consecutive_captcha_count = existing.consecutive_captcha_count
+    cooldown_until = existing.cooldown_until
+    last_session_ok_at = existing.last_session_ok_at
+
+    if preflight_status == "ready":
+        consecutive_captcha_count = 0
+        cooldown_until = ""
+        last_session_ok_at = now_iso
+    elif preflight_status == "captcha_blocked":
+        consecutive_captcha_count += 1
+        next_cooldown = _add_minutes(now_iso, 30 if consecutive_captcha_count == 1 else 120)
+        if next_cooldown:
+            cooldown_until = next_cooldown
+
+    return replace(
+        existing,
+        session_risk_level=risk_level,
+        last_session_preflight_status=preflight_status,
+        consecutive_captcha_count=consecutive_captcha_count,
+        last_session_ok_at=last_session_ok_at,
+        cooldown_until=cooldown_until,
+    )
+
+
+def _add_minutes(now_iso: str, minutes: int) -> str:
+    if not now_iso:
+        return ""
+    current = _parse_iso_utc(now_iso)
+    if current is None:
+        return ""
+    scheduled = current + timedelta(minutes=minutes)
+    return scheduled.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _is_session_cooldown_active(*, cooldown_until: str, now_iso: str) -> bool:
+    if not cooldown_until or not now_iso:
+        return False
+    cooldown_at = _parse_iso_utc(cooldown_until)
+    now_at = _parse_iso_utc(now_iso)
+    if cooldown_at is None or now_at is None:
+        return False
+    return cooldown_at > now_at
+
+
+def _parse_iso_utc(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _with_session_fields(existing: RunState, updated: RunState) -> RunState:
+    return replace(
+        updated,
+        session_risk_level=existing.session_risk_level,
+        last_session_preflight_status=existing.last_session_preflight_status,
+        consecutive_captcha_count=existing.consecutive_captcha_count,
+        last_session_ok_at=existing.last_session_ok_at,
+        cooldown_until=existing.cooldown_until,
+        identity_warning=dict(existing.identity_warning),
+    )
+
+
+def _collect_identity_warning(*, manifest: RunManifest, page: object) -> BrowserIdentityWarning | None:
+    identity = collect_browser_identity(page)
+    return validate_browser_identity(
+        configured_user_agent=manifest.user_agent,
+        configured_accept_language=manifest.accept_language,
+        effective_user_agent=str(identity.get("user_agent") or ""),
+        effective_language=str(identity.get("language") or ""),
+        effective_languages=[str(item) for item in identity.get("languages", [])] if isinstance(identity.get("languages"), list) else [],
+    )
+
+
+def _with_identity_warning(state: RunState, warning: BrowserIdentityWarning | None) -> RunState:
+    if warning is None:
+        return replace(state, identity_warning={})
+    return replace(
+        state,
+        identity_warning={
+            "code": warning.code,
+            "configured": dict(warning.configured),
+            "effective": dict(warning.effective),
+        },
+    )
+
+
+def _resolve_session_preflight(*, manifest: RunManifest, page: object) -> SessionPreflightResult | None:
+    if manifest.session_preflight != "on":
+        return None
+    return run_session_preflight(page, search_url=manifest.url, warm_up=True)
 
 
 def _enrich_listing_survivors(
@@ -572,6 +775,43 @@ def _with_proxy_state(state: RunState, proxy_pool: ProxyPool) -> RunState:
         current_proxy_key=proxy_pool.current_key(),
         block_events_on_current_proxy=proxy_pool.block_events_on_current,
     )
+
+
+def _record_proxy_health(*, proxy_pool: ProxyPool, state: RunState, blocked: bool, proxy_key: str = "") -> None:
+    record_event = getattr(proxy_pool, "record_event", None)
+    if record_event is None:
+        return
+    event = _proxy_health_event_for_state(state=state, blocked=blocked, blocked_proxy_key=proxy_key)
+    if not event:
+        return
+    now_iso = _utc_now_iso()
+    record_event(event, now_iso=now_iso, proxy_key=proxy_key)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _proxy_health_event_for_state(*, state: RunState, blocked: bool, blocked_proxy_key: str) -> str:
+    if blocked and blocked_proxy_key:
+        return "captcha"
+    if state.status == "completed":
+        return "success"
+    if not state.last_error:
+        return ""
+
+    last_error = state.last_error.lower()
+    timeout_markers = (
+        "timeout",
+        "timed out",
+        "proxy disconnected",
+        "connection reset",
+        "connection refused",
+        "socket",
+    )
+    if any(marker in last_error for marker in timeout_markers):
+        return "timeout"
+    return ""
 
 
 def _write_outputs(

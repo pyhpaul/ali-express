@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
+from ali_mvp.proxy_health import ProxyHealthRecord, ProxyHealthStore
 from ali_mvp.run_state import RunManifest
 from ali_mvp.sidecar_proxy import SidecarRuntime, start_sidecar_runtime
 from ali_mvp.v2rayn import load_v2rayn_source
@@ -21,19 +23,43 @@ class ProxyPool:
     current_index: int = 0
     block_events_on_current: int = 0
     runtime: SidecarRuntime | None = None
+    health_store: ProxyHealthStore | None = None
+    health_records: dict[str, ProxyHealthRecord] = field(default_factory=dict)
 
     @classmethod
     def from_manifest(cls, *, manifest: RunManifest, run_dir: Path) -> "ProxyPool":
+        health_store = ProxyHealthStore(run_dir.parent / "_proxy_health.json")
+        health_records = health_store.load()
         if manifest.proxy_provider == "manual":
-            return cls.from_sources(
+            pool = cls.from_sources(
                 proxy=manifest.proxy,
                 proxy_file=manifest.proxy_file,
                 max_blocks_per_proxy=manifest.max_blocks_per_proxy,
             )
+            pool.proxy_keys = list(pool.proxies)
+            pool.health_store = health_store
+            pool.health_records = health_records
+            eligible_indices = pool._eligible_indices(now_iso=_utc_now())
+            pool.proxies = [pool.proxies[index] for index in eligible_indices]
+            pool.proxy_keys = [pool.proxy_keys[index] for index in eligible_indices]
+            if (manifest.proxy.strip() or manifest.proxy_file) and not pool.proxies:
+                raise NoHealthyProxyError("No healthy manual proxies available after cooldown filtering")
+            return pool
 
         source = load_v2rayn_source(Path(manifest.v2rayn_dir))
         runtime = start_sidecar_runtime(source, runtime_dir=run_dir / "proxy_runtime")
-        healthy = runtime.healthy_endpoints()
+        healthy_endpoints = runtime.healthy_endpoints()
+        pool = cls(
+            proxies=[endpoint.proxy_url for endpoint in healthy_endpoints],
+            proxy_keys=[endpoint.key for endpoint in healthy_endpoints],
+            proxy_labels=[endpoint.label for endpoint in healthy_endpoints],
+            max_blocks_per_proxy=max(1, manifest.max_blocks_per_proxy),
+            runtime=runtime,
+            health_store=health_store,
+            health_records=health_records,
+        )
+        eligible_indices = pool._eligible_indices(now_iso=_utc_now())
+        healthy = [healthy_endpoints[index] for index in eligible_indices]
         if not healthy:
             runtime.close()
             raise NoHealthyProxyError(f"No healthy v2rayN sidecar proxies under {manifest.v2rayn_dir}")
@@ -43,6 +69,8 @@ class ProxyPool:
             proxy_labels=[endpoint.label for endpoint in healthy],
             max_blocks_per_proxy=max(1, manifest.max_blocks_per_proxy),
             runtime=runtime,
+            health_store=health_store,
+            health_records=health_records,
         )
 
     @classmethod
@@ -86,3 +114,42 @@ class ProxyPool:
     def close(self) -> None:
         if self.runtime is not None:
             self.runtime.close()
+
+    def record_event(self, event: str, *, now_iso: str, proxy_key: str = "") -> None:
+        proxy_key = proxy_key or self.current_key()
+        if not proxy_key or self.health_store is None:
+            return
+        self.health_records[proxy_key] = self.health_store.mark_result(proxy_key, event=event, now_iso=now_iso)
+
+    def _eligible_indices(self, *, now_iso: str) -> list[int]:
+        return [
+            index
+            for index, proxy in enumerate(self.proxies)
+            if not _is_in_cooldown(self.health_records.get(self._proxy_key_at(index, proxy)), now_iso=now_iso)
+        ]
+
+    def _proxy_key_at(self, index: int, proxy: str) -> str:
+        if index < len(self.proxy_keys):
+            return self.proxy_keys[index]
+        return proxy
+
+
+def _is_in_cooldown(record: ProxyHealthRecord | None, *, now_iso: str) -> bool:
+    if record is None or not record.cooldown_until or not now_iso:
+        return False
+    cooldown_at = _parse_iso_utc(record.cooldown_until)
+    now_at = _parse_iso_utc(now_iso)
+    if cooldown_at is None or now_at is None:
+        return False
+    return cooldown_at > now_at
+
+
+def _parse_iso_utc(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

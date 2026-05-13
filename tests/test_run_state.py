@@ -217,6 +217,40 @@ def test_load_manifest_normalizes_missing_or_invalid_proxy_provider_to_manual(tm
     assert store.load_manifest().proxy_provider == "manual"
 
 
+def test_load_manifest_normalizes_invalid_session_preflight_to_on(tmp_path):
+    store = RunStateStore(tmp_path)
+    payload = {
+        "source_type": "keyword",
+        "source_value": "women dress",
+        "url": "",
+        "max_items": 20,
+        "pages": None,
+        "output_dir": "data/women-dress/20260511_160000",
+        "user_data_dir": ".browser-profile",
+        "port": 9333,
+        "enrich_detail": True,
+        "blacklist_file": None,
+        "reject_keyword": [],
+        "browser_hardening": "minimal",
+        "proxy_provider": "manual",
+        "session_preflight": "invalid",
+        "proxy": "",
+        "proxy_file": "",
+        "max_blocks_per_proxy": 2,
+        "user_agent": "ua",
+        "accept_language": "en-US,en;q=0.9",
+        "created_at": "2026-05-11T08:00:00Z",
+    }
+    store.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert store.load_manifest().session_preflight == "on"
+
+    payload["session_preflight"] = "off"
+    store.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert store.load_manifest().session_preflight == "off"
+
+
 def test_load_state_upgrades_legacy_pending_detail_queue_urls_to_dicts(tmp_path):
     store = RunStateStore(tmp_path)
     payload = {
@@ -265,3 +299,58 @@ def test_run_state_to_summary_marks_failed_runs_resume_recommended(tmp_path):
         "last_blocked_url": "https://www.aliexpress.com/item/11.html",
         "resume_recommended": True,
     }
+
+
+def test_run_state_round_trips_session_risk_fields():
+    state = RunState(
+        status="blocked",
+        session_risk_level="high",
+        last_session_preflight_status="captcha_blocked",
+        consecutive_captcha_count=2,
+        last_session_ok_at="2026-05-12T10:00:00Z",
+        cooldown_until="2026-05-12T10:30:00Z",
+    )
+
+    payload = state.to_dict()
+    restored = RunState.from_dict(payload)
+
+    assert restored.session_risk_level == "high"
+    assert restored.last_session_preflight_status == "captcha_blocked"
+    assert restored.consecutive_captcha_count == 2
+    assert restored.cooldown_until == "2026-05-12T10:30:00Z"
+
+
+def test_run_state_summary_includes_full_identity_warning_structure(tmp_path):
+    store = RunStateStore(tmp_path)
+    state = RunState(
+        status="completed",
+        accepted_count=1,
+        identity_warning={
+            "code": "accept_language_mismatch",
+            "configured": {"accept_language_primary": "en-US"},
+            "effective": {"navigator_language": "fr-FR"},
+        },
+    )
+
+    store.save_summary(state)
+
+    assert store.load_summary()["identity_warning"] == {
+        "code": "accept_language_mismatch",
+        "configured": {"accept_language_primary": "en-US"},
+        "effective": {"navigator_language": "fr-FR"},
+    }
+
+
+def test_run_state_from_dict_ignores_malformed_identity_warning_payload():
+    state = RunState.from_dict(
+        {
+            "status": "failed",
+            "identity_warning": {
+                "code": "accept_language_mismatch",
+                "configured": ["bad-configured-shape"],
+                "effective": "bad-effective-shape",
+            },
+        }
+    )
+
+    assert state.identity_warning == {}

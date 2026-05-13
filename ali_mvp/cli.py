@@ -80,6 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="en-US,en;q=0.9",
         help="Fixed browser Accept-Language value for the full run.",
     )
+    scrape.add_argument(
+        "--session-preflight",
+        choices=("on", "off"),
+        default="on",
+        help="Run session preflight checks before scraping.",
+    )
     scrape.set_defaults(func=run_scrape)
     postprocess = subparsers.add_parser(
         "postprocess",
@@ -166,6 +172,7 @@ def run_scrape(args: argparse.Namespace) -> int:
     browser_hardening = getattr(args, "browser_hardening", "minimal")
     proxy_provider = getattr(args, "proxy_provider", "manual")
     v2rayn_dir = getattr(args, "v2rayn_dir", "")
+    session_preflight = getattr(args, "session_preflight", "on")
     if args.max_items < 1:
         raise SystemExit("--max-items must be greater than 0")
     if args.pages is not None and args.pages < 1:
@@ -198,6 +205,7 @@ def run_scrape(args: argparse.Namespace) -> int:
         max_blocks_per_proxy=args.max_blocks_per_proxy,
         user_agent=args.user_agent,
         accept_language=args.accept_language,
+        session_preflight=session_preflight,
         created_at=scraped_at,
     )
     groups = load_filter_groups(args.blacklist_file, args.reject_keyword)
