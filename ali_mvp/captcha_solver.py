@@ -168,9 +168,7 @@ def _is_verification_gate_page(page: ChromiumPage) -> bool:
         return True
     if "x5step" in query_scope:
         return True
-    if re.search(r"\b(?:captcha|login|signin|sign-in|sign in|auth)\b", text_scope):
-        return True
-    if re.search(r"\b(?:verify|verification)\b", lowered_title):
+    if re.search(r"\b(?:captcha|verify|verification|login|signin|sign-in|sign in|auth)\b", text_scope):
         return True
     if re.search(r"\b(?:phone\s*(?:verify|verification|code|number)|verification\s*code|phone\s+verification|手机号|短信验证码|手机验证)\b", text_scope):
         return True

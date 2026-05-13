@@ -154,7 +154,7 @@ def test_try_solve_captcha_returns_false_for_non_slider_page(monkeypatch):
 
 
 def test_try_solve_captcha_returns_skipped_diagnostic_for_non_slider_page():
-    page = FakePage(js_result=False)
+    page = FakePage(js_result=False, url="https://www.aliexpress.com/item/1.html", title="product")
 
     solved, diagnostic = captcha_solver.try_solve_captcha_with_result(page, timeout_seconds=12.0)
 
@@ -167,6 +167,32 @@ def test_try_solve_captcha_returns_skipped_diagnostic_for_non_slider_page():
         "result": "skipped",
         "fail_reason": "not_slider_gate",
     }
+
+
+def test_try_solve_captcha_treats_verify_url_as_gate_even_without_verify_title(monkeypatch):
+    page = FakePage(
+        js_result=False,
+        url="https://www.aliexpress.com/verify",
+        title="商品详情",
+    )
+    state = {"probe_count": 0, "ticks": 0, "solve_calls": 0}
+
+    def fake_is_slider_captcha(page):
+        state["probe_count"] += 1
+        return state["probe_count"] >= 2
+
+    def fake_solve(page, timeout_seconds=30.0):
+        state["solve_calls"] += 1
+        return True
+
+    monkeypatch.setattr(captcha_solver, "is_slider_captcha", fake_is_slider_captcha)
+    monkeypatch.setattr(captcha_solver, "_solve_slider_captcha", fake_solve)
+    monkeypatch.setattr(captcha_solver.time, "monotonic", lambda: state["ticks"] * 0.1)
+    monkeypatch.setattr(captcha_solver.time, "sleep", lambda seconds: state.__setitem__("ticks", state["ticks"] + 1))
+
+    assert captcha_solver.try_solve_captcha(page, timeout_seconds=1.0) is True
+    assert state["solve_calls"] == 1
+    assert state["probe_count"] >= 2
 
 
 def test_try_solve_captcha_reports_wait_before_slider_becomes_ready(monkeypatch):
