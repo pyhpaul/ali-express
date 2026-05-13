@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import random
 import time
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 try:
@@ -20,6 +21,26 @@ _CAPTCHA_CONTAINER_ID = "baxia-punish"
 _CAPTCHA_URL_MARKER = "_____tmd_____"
 _SLIDER_READY_WAIT_SECONDS = 1.5
 _SLIDER_READY_POLL_SECONDS = 0.1
+
+
+@dataclass
+class _CaptchaSolverDiagnostic:
+    solver_attempted: bool = False
+    slider_detected: bool = False
+    waited_for_ready: bool = False
+    ready_wait_ms: int = 0
+    result: str = "skipped"
+    fail_reason: str = ""
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "solver_attempted": self.solver_attempted,
+            "slider_detected": self.slider_detected,
+            "waited_for_ready": self.waited_for_ready,
+            "ready_wait_ms": self.ready_wait_ms,
+            "result": self.result,
+            "fail_reason": self.fail_reason,
+        }
 
 
 def is_slider_captcha(page: ChromiumPage) -> bool:
@@ -139,43 +160,135 @@ def _is_verification_gate_page(page: ChromiumPage) -> bool:
     parsed = urlparse(url)
     url_scope = f"{parsed.netloc} {parsed.path}".lower()
     text_scope = f"{url_scope} {lowered_title}"
+    query_scope = parsed.query.lower()
 
     if _CAPTCHA_URL_MARKER.lower() in lowered_url:
         return True
     if "/punish" in url_scope:
         return True
-    if re.search(r"\b(?:captcha|verify|verification|login|signin|sign-in|sign in|auth)\b", text_scope):
+    if "x5step" in query_scope:
+        return True
+    if re.search(r"\b(?:captcha|login|signin|sign-in|sign in|auth)\b", text_scope):
+        return True
+    if re.search(r"\b(?:verify|verification)\b", lowered_title):
         return True
     if re.search(r"\b(?:phone\s*(?:verify|verification|code|number)|verification\s*code|phone\s+verification|手机号|短信验证码|手机验证)\b", text_scope):
         return True
     return False
 
 
+def _wait_for_slider_ready(page: ChromiumPage, timeout_seconds: float) -> tuple[bool, bool, int]:
+    start = time.monotonic()
+
+    ready = _wait_for_condition(lambda: is_slider_captcha(page), timeout_seconds)
+    ready_wait_ms = int((time.monotonic() - start) * 1000)
+    return ready, ready_wait_ms > 0, ready_wait_ms
+
+
+def _wait_for_slider_distance_ready(page: ChromiumPage, timeout_seconds: float) -> tuple[bool, bool, int]:
+    start = time.monotonic()
+
+    def ready() -> bool:
+        distance = _get_slider_distance(page)
+        slider_button = page.ele(f"#{_SLIDER_BUTTON_ID}")
+        return distance > 0 and bool(slider_button)
+
+    ready_result = _wait_for_condition(ready, timeout_seconds)
+    ready_wait_ms = int((time.monotonic() - start) * 1000)
+    return ready_result, ready_wait_ms > 0, ready_wait_ms
+
+
 def _solve_slider_captcha(page: ChromiumPage, timeout_seconds: float = 30.0) -> bool:
+    solved, _ = _solve_slider_captcha_with_result(page, timeout_seconds=timeout_seconds)
+    return solved
+
+
+def _solve_slider_captcha_with_result(page: ChromiumPage, timeout_seconds: float = 30.0) -> tuple[bool, dict[str, object]]:
+    diagnostic = _CaptchaSolverDiagnostic()
     ready_timeout = min(timeout_seconds, _SLIDER_READY_WAIT_SECONDS)
-    if not _wait_for_condition(
-        lambda: _get_slider_distance(page) > 0 and bool(page.ele(f"#{_SLIDER_BUTTON_ID}")),
-        ready_timeout,
-    ):
-        return False
+    try:
+        diagnostic.slider_detected = is_slider_captcha(page)
+        ready, waited_for_ready, ready_wait_ms = _wait_for_slider_distance_ready(page, ready_timeout)
+        diagnostic.waited_for_ready = waited_for_ready
+        diagnostic.ready_wait_ms = ready_wait_ms
+        if not ready:
+            diagnostic.result = "failed"
+            diagnostic.fail_reason = "distance_not_ready"
+            return False, diagnostic.as_dict()
 
-    distance = _get_slider_distance(page)
-    slider_button = page.ele(f"#{_SLIDER_BUTTON_ID}")
-    if not slider_button:
-        return False
+        distance = _get_slider_distance(page)
+        slider_button = page.ele(f"#{_SLIDER_BUTTON_ID}")
+        if not slider_button:
+            diagnostic.result = "failed"
+            diagnostic.fail_reason = "distance_not_ready"
+            return False, diagnostic.as_dict()
 
-    trajectory = _generate_slider_trajectory(distance)
-    if not trajectory:
-        return False
+        trajectory = _generate_slider_trajectory(distance)
+        if not trajectory:
+            diagnostic.result = "failed"
+            diagnostic.fail_reason = "distance_not_ready"
+            return False, diagnostic.as_dict()
 
-    _perform_slider_drag(page, slider_button, trajectory)
+        diagnostic.solver_attempted = True
+        try:
+            _perform_slider_drag(page, slider_button, trajectory)
+        except Exception:
+            diagnostic.result = "failed"
+            diagnostic.fail_reason = "drag_failed"
+            return False, diagnostic.as_dict()
 
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        time.sleep(1.0)
-        if not _is_verification_gate_page(page) and not is_slider_captcha(page):
-            return True
-    return False
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            time.sleep(1.0)
+            if not _is_verification_gate_page(page) and not is_slider_captcha(page):
+                diagnostic.result = "solved"
+                diagnostic.fail_reason = ""
+                return True, diagnostic.as_dict()
+
+        diagnostic.result = "failed"
+        diagnostic.fail_reason = "gate_not_cleared"
+        return False, diagnostic.as_dict()
+    except Exception:
+        diagnostic.result = "failed"
+        diagnostic.fail_reason = "exception"
+        return False, diagnostic.as_dict()
+
+
+def try_solve_captcha_with_result(page: ChromiumPage, timeout_seconds: float = 30.0) -> tuple[bool, dict[str, object]]:
+    diagnostic = _CaptchaSolverDiagnostic()
+
+    try:
+        if _is_verification_gate_page(page):
+            ready_timeout = min(timeout_seconds, _SLIDER_READY_WAIT_SECONDS)
+            ready, waited_for_ready, ready_wait_ms = _wait_for_slider_ready(page, ready_timeout)
+            diagnostic.slider_detected = ready
+            diagnostic.waited_for_ready = waited_for_ready
+            diagnostic.ready_wait_ms = ready_wait_ms
+            if not ready:
+                diagnostic.result = "failed"
+                diagnostic.fail_reason = "slider_not_ready"
+                return False, diagnostic.as_dict()
+        elif not is_slider_captcha(page):
+            diagnostic.result = "skipped"
+            diagnostic.fail_reason = "not_slider_gate"
+            return False, diagnostic.as_dict()
+        else:
+            diagnostic.slider_detected = True
+
+        solved, solver_diagnostic = _solve_slider_captcha_with_result(page, timeout_seconds=timeout_seconds)
+        solver_diagnostic = dict(solver_diagnostic)
+        if diagnostic.waited_for_ready:
+            solver_diagnostic["waited_for_ready"] = True
+            solver_diagnostic["ready_wait_ms"] = max(
+                int(solver_diagnostic.get("ready_wait_ms", 0)),
+                diagnostic.ready_wait_ms,
+            )
+        solver_diagnostic["slider_detected"] = True
+        return solved, solver_diagnostic
+    except Exception:
+        diagnostic.result = "failed"
+        diagnostic.fail_reason = "exception"
+        return False, diagnostic.as_dict()
 
 
 def try_solve_captcha(page: ChromiumPage, timeout_seconds: float = 30.0) -> bool:

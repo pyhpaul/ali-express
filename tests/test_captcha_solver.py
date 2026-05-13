@@ -153,6 +153,101 @@ def test_try_solve_captcha_returns_false_for_non_slider_page(monkeypatch):
     assert captcha_solver.try_solve_captcha(page, timeout_seconds=12.0) is False
 
 
+def test_try_solve_captcha_returns_skipped_diagnostic_for_non_slider_page():
+    page = FakePage(js_result=False)
+
+    solved, diagnostic = captcha_solver.try_solve_captcha_with_result(page, timeout_seconds=12.0)
+
+    assert solved is False
+    assert diagnostic == {
+        "solver_attempted": False,
+        "slider_detected": False,
+        "waited_for_ready": False,
+        "ready_wait_ms": 0,
+        "result": "skipped",
+        "fail_reason": "not_slider_gate",
+    }
+
+
+def test_try_solve_captcha_reports_wait_before_slider_becomes_ready(monkeypatch):
+    page = FakePage(
+        js_result=False,
+        url="https://www.aliexpress.com/verify?x5step=1",
+        title="验证码拦截",
+    )
+    state = {"probe_count": 0, "ticks": 0}
+
+    def fake_is_slider_captcha(page):
+        state["probe_count"] += 1
+        return state["probe_count"] >= 3
+
+    monkeypatch.setattr(captcha_solver, "is_slider_captcha", fake_is_slider_captcha)
+    monkeypatch.setattr(captcha_solver, "_solve_slider_captcha_with_result", lambda page, timeout_seconds=30.0: (True, {
+        "solver_attempted": True,
+        "slider_detected": True,
+        "waited_for_ready": False,
+        "ready_wait_ms": 0,
+        "result": "solved",
+        "fail_reason": "",
+    }))
+    monkeypatch.setattr(captcha_solver.time, "monotonic", lambda: state["ticks"] * 0.1)
+    monkeypatch.setattr(captcha_solver.time, "sleep", lambda seconds: state.__setitem__("ticks", state["ticks"] + 1))
+
+    solved, diagnostic = captcha_solver.try_solve_captcha_with_result(page, timeout_seconds=1.0)
+
+    assert solved is True
+    assert diagnostic["slider_detected"] is True
+    assert diagnostic["waited_for_ready"] is True
+    assert diagnostic["ready_wait_ms"] >= 200
+    assert diagnostic["result"] == "solved"
+
+
+def test_solve_slider_captcha_reports_distance_not_ready(monkeypatch):
+    page = FakePage(
+        js_result=True,
+        url="https://www.aliexpress.com/verify?x5step=1",
+        title="验证码拦截",
+        button=object(),
+    )
+    state = {"ticks": 0}
+
+    monkeypatch.setattr(captcha_solver, "_get_slider_distance", lambda page: 0)
+    monkeypatch.setattr(captcha_solver.time, "monotonic", lambda: state["ticks"] * 0.1)
+    monkeypatch.setattr(captcha_solver.time, "sleep", lambda seconds: state.__setitem__("ticks", state["ticks"] + 1))
+
+    solved, diagnostic = captcha_solver._solve_slider_captcha_with_result(page, timeout_seconds=0.5)
+
+    assert solved is False
+    assert diagnostic["solver_attempted"] is False
+    assert diagnostic["slider_detected"] is True
+    assert diagnostic["result"] == "failed"
+    assert diagnostic["fail_reason"] == "distance_not_ready"
+
+
+def test_solve_slider_captcha_reports_gate_not_cleared_after_drag(monkeypatch):
+    page = FakePage(
+        js_result=True,
+        url="https://www.aliexpress.com/verify?x5step=1",
+        title="验证码拦截",
+        button=object(),
+    )
+    state = {"ticks": 0}
+
+    monkeypatch.setattr(captcha_solver, "_get_slider_distance", lambda page: 60)
+    monkeypatch.setattr(captcha_solver, "_generate_slider_trajectory", lambda distance: [{"x": distance, "y": 0, "delay": 0}])
+    monkeypatch.setattr(captcha_solver, "_perform_slider_drag", lambda page, slider_button, trajectory: None)
+    monkeypatch.setattr(captcha_solver, "is_slider_captcha", lambda page: True)
+    monkeypatch.setattr(captcha_solver.time, "monotonic", lambda: state["ticks"] * 0.1)
+    monkeypatch.setattr(captcha_solver.time, "sleep", lambda seconds: state.__setitem__("ticks", state["ticks"] + 1))
+
+    solved, diagnostic = captcha_solver._solve_slider_captcha_with_result(page, timeout_seconds=0.3)
+
+    assert solved is False
+    assert diagnostic["solver_attempted"] is True
+    assert diagnostic["result"] == "failed"
+    assert diagnostic["fail_reason"] == "gate_not_cleared"
+
+
 def test_try_solve_captcha_returns_solver_result_for_slider(monkeypatch):
     page = FakePage(js_result=True)
     calls: list[float] = []
