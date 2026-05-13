@@ -1131,6 +1131,56 @@ def test_is_captcha_page_detects_punish_url_and_title():
     assert browser._is_captcha_page("https://www.aliexpress.com/item/1.html", "Thermomix - AliExpress 6") is False
 
 
+def test_wait_for_captcha_resolution_tries_solver_once_and_returns_true_on_success(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.url = "https://www.aliexpress.com//item/1.html/_____tmd_____/punish?x5step=1"
+            self.title = "验证码拦截"
+
+    page = FakePage()
+    calls = {"solve": 0, "ready": 0}
+
+    def fake_solve(target, timeout_seconds=30.0):
+        calls["solve"] += 1
+        target.url = "https://www.aliexpress.com/item/1.html"
+        target.title = "detail"
+        return True
+
+    monkeypatch.setattr(browser, "try_solve_captcha", fake_solve)
+    monkeypatch.setattr(
+        browser,
+        "_wait_for_page_ready",
+        lambda page, timeout_seconds=8.0: calls.__setitem__("ready", calls["ready"] + 1),
+    )
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+
+    assert browser._wait_for_captcha_resolution(page, timeout_seconds=2.0, interval_seconds=0.1) is True
+    assert calls["solve"] == 1
+
+
+def test_wait_for_captcha_resolution_keeps_existing_timeout_path_when_solver_fails(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.url = "https://www.aliexpress.com//item/1.html/_____tmd_____/punish?x5step=1"
+            self.title = "验证码拦截"
+
+    page = FakePage()
+    calls = {"solve": 0}
+    moments = iter([0.0, 0.2, 1.5])
+
+    monkeypatch.setattr(
+        browser,
+        "try_solve_captcha",
+        lambda target, timeout_seconds=30.0: calls.__setitem__("solve", calls["solve"] + 1) or False,
+    )
+    monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(browser.time, "monotonic", lambda: next(moments))
+
+    assert browser._wait_for_captcha_resolution(page, timeout_seconds=1.0, interval_seconds=0.1) is False
+    assert calls["solve"] == 1
+
+
 def test_normalize_detail_fields_prefers_real_store_name_and_cleans_breadcrumb_and_description():
     detail = {
         "shopName": "0 Cart",
