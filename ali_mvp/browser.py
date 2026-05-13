@@ -743,7 +743,11 @@ def _wait_for_captcha_resolution(
             solver_attempted = True
             solve_timeout = max(0.0, min(30.0, deadline - now))
             if solve_timeout > 0 and try_solve_captcha(page, timeout_seconds=solve_timeout):
+                _wait_for_page_ready(page)
                 return True
+            now = time.monotonic()
+            if now >= deadline:
+                break
         time.sleep(interval_seconds)
         _wait_for_page_ready(page)
     return not _is_captcha_page(str(getattr(page, "url", "")), str(getattr(page, "title", "")))
