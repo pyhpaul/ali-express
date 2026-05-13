@@ -281,3 +281,60 @@ def test_run_llm_review_for_dir_writes_final_keep_and_drop_csv_with_full_fields(
     assert list(drop_rows[0].keys()) == LLM_REVIEW_FIELDS
     assert keep_rows[0]["llm_decision"] == "keep"
     assert drop_rows[0]["llm_decision"] == "drop"
+
+
+def test_run_llm_review_for_dir_writes_html_report(tmp_path):
+    run_dir = tmp_path
+    config = _config()
+    row = _review_row(product_url="https://example.test/item/1", title="Keep item")
+    _write_products_review_csv(run_dir, [row])
+
+    def reviewer(_row, _config):
+        return {
+            "decision": "keep",
+            "reason": "keep reason",
+            "risk_tags": ["chip"],
+            "confidence": "high",
+            "summary_zh": "疑似芯片控制类",
+        }
+
+    run_llm_review_for_dir(run_dir, config=config, reviewer=reviewer)
+
+    report_path = run_dir / "products_llm_report.html"
+    assert report_path.exists()
+
+    html = report_path.read_text(encoding="utf-8")
+    assert f"Model: {config.model}" in html
+    assert "Prompt: v1" in html
+    assert "Keep: 1" in html
+    assert "疑似芯片控制类" in html
+
+
+def test_run_llm_review_for_dir_does_not_reuse_existing_row_with_decision_and_error(tmp_path):
+    run_dir = tmp_path
+    config = _config()
+    review_row = _review_row(product_url="https://example.test/item/1", title="Adapter shell")
+    _write_products_review_csv(run_dir, [review_row])
+    existing_row = _llm_row(review_row, config=config, decision="keep")
+    existing_row["llm_error"] = "boom"
+    write_llm_review_csv(run_dir / "products_llm_review.csv", [existing_row])
+    calls = []
+
+    def reviewer(row, _config):
+        calls.append(row["product_url"])
+        return {
+            "decision": "drop",
+            "reason": "rerun after conflicted existing row",
+            "risk_tags": ["promo_bundle"],
+            "confidence": "medium",
+            "summary_zh": "重跑后丢弃",
+        }
+
+    result = run_llm_review_for_dir(run_dir, config=config, reviewer=reviewer)
+
+    rows = read_csv_rows(run_dir / "products_llm_review.csv")
+    assert calls == [review_row["product_url"]]
+    assert result.reviewed_count == 1
+    assert result.skipped_count == 0
+    assert rows[0]["llm_decision"] == "drop"
+    assert rows[0]["llm_error"] == ""

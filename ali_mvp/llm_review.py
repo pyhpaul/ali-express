@@ -59,6 +59,17 @@ def compute_llm_input_hash(row: Mapping[str, str]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def classify_llm_row(row: Mapping[str, str]) -> str:
+    if str(row.get("llm_error", "")).strip():
+        return "error"
+    decision = str(row.get("llm_decision", "")).strip()
+    if decision == "keep":
+        return "keep"
+    if decision == "drop":
+        return "drop"
+    return "error"
+
+
 def run_llm_review_for_dir(
     run_dir: Path,
     *,
@@ -95,12 +106,13 @@ def run_llm_review_for_dir(
     write_llm_review_csv(run_dir / "products_llm_review.csv", output_rows)
     write_llm_review_csv(
         run_dir / "products_final_keep.csv",
-        [row for row in output_rows if row.get("llm_decision") == "keep"],
+        [row for row in output_rows if classify_llm_row(row) == "keep"],
     )
     write_llm_review_csv(
         run_dir / "products_final_drop.csv",
-        [row for row in output_rows if row.get("llm_decision") == "drop"],
+        [row for row in output_rows if classify_llm_row(row) == "drop"],
     )
+    _write_llm_report_html(run_dir, rows=output_rows, model_label=config.model)
     return _build_run_result(
         total_rows=len(review_rows),
         reviewed_count=reviewed_count,
@@ -139,7 +151,7 @@ def _can_reuse_existing(
         and existing.get("llm_prompt_version", "") == LLM_PROMPT_VERSION
         and existing.get("llm_model", "") == config.model
         and existing.get("llm_provider", "") == config.provider
-        and bool(existing.get("llm_decision", "").strip())
+        and classify_llm_row(existing) in {"keep", "drop"}
     )
 
 
@@ -205,8 +217,8 @@ def _build_run_result(
     failed_count: int,
     rows: list[dict[str, str]],
 ) -> LlmReviewRunResult:
-    keep_count = sum(1 for row in rows if row.get("llm_decision") == "keep")
-    drop_count = sum(1 for row in rows if row.get("llm_decision") == "drop")
+    keep_count = sum(1 for row in rows if classify_llm_row(row) == "keep")
+    drop_count = sum(1 for row in rows if classify_llm_row(row) == "drop")
     exit_code = 0 if reviewed_count > 0 or skipped_count > 0 else 1
     return LlmReviewRunResult(
         exit_code=exit_code,
@@ -216,4 +228,27 @@ def _build_run_result(
         failed_count=failed_count,
         keep_count=keep_count,
         drop_count=drop_count,
+    )
+
+
+def _resolve_source_label(rows: list[dict[str, str]]) -> str:
+    for row in rows:
+        source_value = str(row.get("source_value", "")).strip()
+        if source_value:
+            return source_value
+    return "run"
+
+
+def _write_llm_report_html(run_dir: Path, *, rows: list[dict[str, str]], model_label: str) -> None:
+    from .llm_reporting import render_llm_report_html
+
+    source_label = _resolve_source_label(rows)
+    (run_dir / "products_llm_report.html").write_text(
+        render_llm_report_html(
+            rows,
+            source_label=source_label,
+            model_label=model_label,
+            prompt_version=LLM_PROMPT_VERSION,
+        ),
+        encoding="utf-8",
     )
