@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .browser import collect_session_signals, warm_up_search_session
+from .captcha_solver import try_solve_captcha
 
 
 @dataclass(frozen=True)
@@ -17,7 +18,14 @@ class SessionPreflightResult:
 def run_session_preflight(page, *, search_url: str, warm_up: bool) -> SessionPreflightResult:
     initial_payload = collect_session_signals(page)
     initial_result = _classify_session_payload(initial_payload)
-    if initial_result.status in {"captcha_blocked", "phone_verification_required", "login_required"}:
+    if initial_result.status == "captcha_blocked":
+        if try_solve_captcha(page, timeout_seconds=30.0):
+            initial_payload = collect_session_signals(page)
+            initial_result = _classify_session_payload(initial_payload)
+        else:
+            return initial_result
+
+    if initial_result.status in {"phone_verification_required", "login_required"}:
         return initial_result
 
     if initial_result.status == "search_not_ready" and warm_up:
