@@ -70,7 +70,7 @@ def _generate_slider_trajectory(distance: int) -> list[dict[str, int]]:
     current_x = 0.0
     accum_y = 0.0
 
-    while current_x < distance and len(points) < 100:
+    while current_x < distance:
         if current_x < accel_end:
             step = base_step * (0.5 + (current_x / accel_end) * 1.5)
             delay = random.randint(10, 30)
@@ -99,19 +99,31 @@ def _perform_slider_drag(page: ChromiumPage, slider_button, trajectory: list[dic
     actions = Actions(page)
     actions.move_to(slider_button)
     actions.hold(slider_button)
+    try:
+        prev_x = 0
+        prev_y = 0
+        for point in trajectory:
+            dx = point["x"] - prev_x
+            dy = point["y"] - prev_y
+            actions.move(dx, dy, duration=0.01)
+            if point["delay"] > 0:
+                time.sleep(point["delay"] / 1000.0)
+            prev_x = point["x"]
+            prev_y = point["y"]
+    finally:
+        actions.release(slider_button)
 
-    prev_x = 0
-    prev_y = 0
-    for point in trajectory:
-        dx = point["x"] - prev_x
-        dy = point["y"] - prev_y
-        actions.move(dx, dy, duration=0.01)
-        if point["delay"] > 0:
-            time.sleep(point["delay"] / 1000.0)
-        prev_x = point["x"]
-        prev_y = point["y"]
 
-    actions.release(slider_button)
+def _is_verification_gate_page(page: ChromiumPage) -> bool:
+    url = str(getattr(page, "url", "") or "").lower()
+    title = str(getattr(page, "title", "") or "").lower()
+    if _CAPTCHA_URL_MARKER.lower() in url:
+        return True
+    if "/punish" in url:
+        return True
+    gate_markers = ("captcha", "verify", "login", "phone")
+    haystack = f"{url} {title}"
+    return any(marker in haystack for marker in gate_markers)
 
 
 def _solve_slider_captcha(page: ChromiumPage, timeout_seconds: float = 30.0) -> bool:
@@ -132,9 +144,7 @@ def _solve_slider_captcha(page: ChromiumPage, timeout_seconds: float = 30.0) -> 
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         time.sleep(1.0)
-        if not is_slider_captcha(page):
-            return True
-        if _CAPTCHA_URL_MARKER not in str(getattr(page, "url", "")):
+        if not _is_verification_gate_page(page) and not is_slider_captcha(page):
             return True
     return False
 
