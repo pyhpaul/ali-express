@@ -88,11 +88,13 @@ def test_solve_slider_captcha_returns_false_when_slider_disappears_but_page_is_s
         js_result=False,
         url="https://www.aliexpress.com/verify?x5step=1",
         title="verify",
+        button=object(),
     )
     monkeypatch.setattr(captcha_solver, "_get_slider_distance", lambda page: 60)
     monkeypatch.setattr(captcha_solver, "_generate_slider_trajectory", lambda distance: [{"x": distance, "y": 0, "delay": 0}])
     monkeypatch.setattr(captcha_solver, "_perform_slider_drag", lambda page, slider_button, trajectory: None)
     monkeypatch.setattr(captcha_solver.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(captcha_solver, "is_slider_captcha", lambda page: False)
 
     assert captcha_solver._solve_slider_captcha(page, timeout_seconds=0.01) is False
 
@@ -133,6 +135,15 @@ def test_solve_slider_captcha_returns_false_when_gate_remains_blocked(monkeypatc
     monkeypatch.setattr(captcha_solver, "is_slider_captcha", lambda page: True)
 
     assert captcha_solver._solve_slider_captcha(page, timeout_seconds=0.01) is False
+
+
+def test_is_verification_gate_page_ignores_normal_phone_words():
+    page = FakePage(
+        url="https://www.aliexpress.com/wholesale?SearchText=phone+case",
+        title="iphone case",
+    )
+
+    assert captcha_solver._is_verification_gate_page(page) is False
 
 
 def test_try_solve_captcha_returns_false_for_non_slider_page(monkeypatch):

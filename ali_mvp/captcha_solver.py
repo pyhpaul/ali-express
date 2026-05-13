@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 import random
 import time
+from urllib.parse import urlparse
 
 try:
     from DrissionPage import ChromiumPage
@@ -56,7 +58,10 @@ return (() => {
         )
     except Exception:
         return 0
-    return int(payload) if payload else 0
+    try:
+        return int(payload) if payload else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def _generate_slider_trajectory(distance: int) -> list[dict[str, int]]:
@@ -115,15 +120,23 @@ def _perform_slider_drag(page: ChromiumPage, slider_button, trajectory: list[dic
 
 
 def _is_verification_gate_page(page: ChromiumPage) -> bool:
-    url = str(getattr(page, "url", "") or "").lower()
-    title = str(getattr(page, "title", "") or "").lower()
-    if _CAPTCHA_URL_MARKER.lower() in url:
+    url = str(getattr(page, "url", "") or "")
+    title = str(getattr(page, "title", "") or "")
+    lowered_url = url.lower()
+    lowered_title = title.lower()
+    parsed = urlparse(url)
+    url_scope = f"{parsed.netloc} {parsed.path}".lower()
+    text_scope = f"{url_scope} {lowered_title}"
+
+    if _CAPTCHA_URL_MARKER.lower() in lowered_url:
         return True
-    if "/punish" in url:
+    if "/punish" in url_scope:
         return True
-    gate_markers = ("captcha", "verify", "login", "phone")
-    haystack = f"{url} {title}"
-    return any(marker in haystack for marker in gate_markers)
+    if re.search(r"\b(?:captcha|verify|verification|login|signin|sign-in|sign in|auth)\b", text_scope):
+        return True
+    if re.search(r"\b(?:phone\s*(?:verify|verification|code|number)|verification\s*code|phone\s+verification|手机号|短信验证码|手机验证)\b", text_scope):
+        return True
+    return False
 
 
 def _solve_slider_captcha(page: ChromiumPage, timeout_seconds: float = 30.0) -> bool:
