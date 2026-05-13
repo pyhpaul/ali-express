@@ -57,7 +57,7 @@ def resolve_llm_config(
     dotenv_path = env_path or _find_nearest_dotenv(run_dir)
     env_values = _read_dotenv(dotenv_path) if dotenv_path else {}
 
-    resolved_base_url = base_url or env_values.get("ALI_MVP_LLM_BASE_URL", "")
+    resolved_base_url = _normalize_base_url(base_url or env_values.get("ALI_MVP_LLM_BASE_URL", ""))
     resolved_api_key = api_key or env_values.get("ALI_MVP_LLM_API_KEY", "")
     resolved_model = model or env_values.get("ALI_MVP_LLM_MODEL", "")
 
@@ -78,13 +78,31 @@ def resolve_llm_config(
     )
 
 
+def _normalize_base_url(raw_base_url: str) -> str:
+    base_url = raw_base_url.strip().rstrip("/")
+    if not base_url:
+        return ""
+    if base_url.endswith("/v1"):
+        return base_url
+    return f"{base_url}/v1"
+
+
 def build_llm_messages(row: dict[str, str]) -> list[dict[str, str]]:
     return [
         {
             "role": "system",
             "content": (
-                "Review the product and return JSON with keys: decision, reason, "
-                "risk_tags, confidence, summary_zh."
+                "Review AliExpress products for broad home appliance accessory intake and return JSON only "
+                "with keys: decision, reason, risk_tags, confidence, summary_zh. "
+                "decision must be keep or drop. "
+                "confidence must be high, medium, or low. "
+                "risk_tags must be a JSON array of strings. "
+                "Default to drop for controller-like, electrical, or active components such as remote control, "
+                "controller, chip, circuit board, PCB, battery, motor, ignition control, or wireless module. "
+                "Default to keep for passive non-electric accessories that clearly match home appliance accessories, "
+                "such as drain pipe, hose, clamp, blade cover, screen protector, glass protector, bracket, or seal. "
+                "Do not keep a product only because it mentions an appliance brand or appliance model. "
+                "If the product is a powered control device or an electronic control accessory, return drop."
             ),
         },
         {
@@ -107,6 +125,7 @@ def request_llm_review(
                 "model": config.model,
                 "messages": messages,
                 "temperature": 0,
+                "stream": False,
             },
             ensure_ascii=False,
         ).encode("utf-8"),
@@ -151,11 +170,11 @@ def normalize_llm_review_response(payload: dict[str, object]) -> dict[str, objec
     if not isinstance(parsed, dict):
         raise ValueError("LLM response content must be a JSON object")
 
-    decision = parsed.get("decision")
+    decision = _normalize_decision(parsed.get("decision"))
     if decision not in {"keep", "drop"}:
         raise ValueError("decision must be one of: keep, drop")
 
-    confidence = parsed.get("confidence")
+    confidence = _normalize_confidence(parsed.get("confidence"))
     if confidence not in {"high", "medium", "low"}:
         raise ValueError("confidence must be one of: high, medium, low")
 
@@ -170,3 +189,28 @@ def normalize_llm_review_response(payload: dict[str, object]) -> dict[str, objec
         "confidence": confidence,
         "summary_zh": str(parsed.get("summary_zh", "")),
     }
+
+
+def _normalize_decision(raw_decision: object) -> str:
+    decision = str(raw_decision or "").strip().lower()
+    if decision == "reject":
+        return "drop"
+    return decision
+
+
+def _normalize_confidence(raw_confidence: object) -> str:
+    if isinstance(raw_confidence, str):
+        normalized = raw_confidence.strip().lower()
+        if normalized in {"high", "medium", "low"}:
+            return normalized
+        try:
+            raw_confidence = float(normalized)
+        except ValueError:
+            return normalized
+    if isinstance(raw_confidence, (int, float)):
+        if raw_confidence >= 0.8:
+            return "high"
+        if raw_confidence >= 0.5:
+            return "medium"
+        return "low"
+    return str(raw_confidence or "").strip().lower()
