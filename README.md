@@ -9,6 +9,22 @@ python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 ```
 
+## LLM Review Setup
+
+Configure the OpenAI-compatible endpoint in a local project `.env` file:
+
+```dotenv
+ALI_MVP_LLM_BASE_URL=https://example.test/v1
+ALI_MVP_LLM_API_KEY=sk-example
+ALI_MVP_LLM_MODEL=gpt-4.1-mini
+```
+
+CLI flags can override `.env` for a single run:
+
+- `--llm-base-url`
+- `--llm-api-key`
+- `--llm-model`
+
 ## Login
 
 Open AliExpress in the browser profile used by DrissionPage and log in manually before scraping.
@@ -92,6 +108,20 @@ Optional product blacklist filtering:
 ```bash
 python -m ali_mvp scrape --keyword "Home appliance accessories" --blacklist-file rules/product_blacklist.json
 python -m ali_mvp scrape --keyword "Home appliance accessories" --blacklist-file rules/product_blacklist.json --reject-keyword sensor --reject-keyword relay
+```
+
+Run a standalone LLM review for an existing run:
+
+```bash
+python -m ali_mvp llm-review --run-dir data/home-appliance-accessories/20260513_151040
+python -m ali_mvp llm-review --run-dir data/home-appliance-accessories/20260513_151040 --llm-max-items 5
+```
+
+Chain LLM review after scrape:
+
+```bash
+python -m ali_mvp scrape --keyword "Home appliance accessories" --max-items 20 --llm-review
+python -m ali_mvp scrape --keyword "Home appliance accessories" --max-items 20 --llm-review --llm-force
 ```
 
 Resume a blocked run:
@@ -190,6 +220,20 @@ Additional outputs:
 - `review_only.csv`
 - `products_report.html`
 - `translation_cache.json`
+
+LLM review outputs:
+
+- `products_llm_review.csv`
+- `products_final_keep.csv`
+- `products_final_drop.csv`
+- `products_llm_report.html`
+
+LLM review behavior:
+
+- `llm-review` reads `products_review.csv` from one existing run directory
+- `scrape --llm-review` only triggers the LLM step after scrape exits with `0` or `2`
+- `--llm-force` ignores reusable cached rows and re-runs all eligible rows
+- `--llm-max-items` only limits the current LLM review batch for debugging
 
 Recommended review workflow for non-technical staff:
 
@@ -370,6 +414,34 @@ Code locations:
 - Review row join: `ali_mvp/review.py` -> `build_review_rows()`
 - CSV columns: `ali_mvp/output.py` -> `REVIEW_FIELDS`
 - Output path and write call: `ali_mvp/cli.py` -> `run_scrape()`
+
+### LLM review artifacts
+
+Run with either:
+
+```bash
+python -m ali_mvp llm-review --run-dir data/home-appliance-accessories/20260513_151040
+python -m ali_mvp scrape --keyword "Home appliance accessories" --max-items 20 --llm-review
+```
+
+Generated files:
+
+- `products_llm_review.csv`
+  - full LLM review table for all processed `products_review.csv` rows
+  - keeps product context, rule-layer context, LLM decision, risk tags, summary, model, prompt version, input hash, and any row-level error
+- `products_final_keep.csv`
+  - subset where `llm_decision == keep`
+- `products_final_drop.csv`
+  - subset where `llm_decision == drop`
+- `products_llm_report.html`
+  - HTML review page grouped into keep / drop / error
+
+Code locations:
+
+- Config resolution and OpenAI-compatible client: `ali_mvp/llm_client.py`
+- Review orchestration, reuse, keep/drop slicing: `ali_mvp/llm_review.py`
+- HTML rendering: `ali_mvp/llm_reporting.py`
+- CLI entrypoints: `ali_mvp/cli.py` -> `run_llm_review()` and `run_scrape()`
 
 ### Postprocess artifacts
 

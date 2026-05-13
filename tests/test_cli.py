@@ -2,10 +2,12 @@ import argparse
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from ali_mvp.cli import build_output_dir, build_parser, run_postprocess, run_resume, run_scrape
+from ali_mvp import cli
+from ali_mvp.cli import build_output_dir, build_parser, run_llm_review, run_postprocess, run_resume, run_scrape
 from ali_mvp.filtering import FilterGroup
 
 
@@ -142,6 +144,418 @@ def test_scrape_parser_accepts_session_preflight_option():
     )
 
     assert args.session_preflight == "off"
+
+
+def test_llm_review_parser_accepts_required_run_dir():
+    parser = build_parser()
+
+    args = parser.parse_args(["llm-review", "--run-dir", "data/run-1"])
+
+    assert args.run_dir == "data/run-1"
+    assert args.llm_base_url == ""
+    assert args.llm_api_key == ""
+    assert args.llm_model == ""
+    assert args.llm_force is False
+    assert args.llm_max_items is None
+    assert args.func is run_llm_review
+
+
+def test_llm_review_parser_requires_run_dir():
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["llm-review"])
+
+
+def test_scrape_parser_accepts_llm_review_flags():
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "scrape",
+            "--keyword",
+            "women dress",
+            "--llm-review",
+            "--llm-base-url",
+            "http://localhost:11434/v1",
+            "--llm-api-key",
+            "secret",
+            "--llm-model",
+            "gpt-test",
+            "--llm-force",
+            "--llm-max-items",
+            "5",
+        ]
+    )
+
+    assert args.llm_review is True
+    assert args.llm_base_url == "http://localhost:11434/v1"
+    assert args.llm_api_key == "secret"
+    assert args.llm_model == "gpt-test"
+    assert args.llm_force is True
+    assert args.llm_max_items == 5
+
+
+def test_run_llm_review_rejects_non_positive_llm_max_items():
+    args = argparse.Namespace(
+        run_dir="data/run-1",
+        llm_base_url="",
+        llm_api_key="",
+        llm_model="",
+        llm_force=False,
+        llm_max_items=0,
+    )
+
+    with pytest.raises(SystemExit, match="--llm-max-items must be greater than 0"):
+        run_llm_review(args)
+
+
+def test_run_llm_review_builds_config_and_writes_expected_outputs(monkeypatch, tmp_path, capsys):
+    run_dir = tmp_path / "run-1"
+    seen: dict[str, object] = {}
+    fake_config = object()
+
+    def fake_resolve_llm_config(*, run_dir, base_url, api_key, model):
+        seen["resolve"] = {
+            "run_dir": run_dir,
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": model,
+        }
+        return fake_config
+
+    def fake_run_llm_review_for_dir(run_dir, *, config, force, max_items):
+        seen["review"] = {
+            "run_dir": run_dir,
+            "config": config,
+            "force": force,
+            "max_items": max_items,
+        }
+        return SimpleNamespace(
+            exit_code=7,
+            reviewed_count=4,
+            skipped_count=3,
+            failed_count=2,
+            keep_count=5,
+            drop_count=4,
+        )
+
+    monkeypatch.setattr(cli, "resolve_llm_config", fake_resolve_llm_config)
+    monkeypatch.setattr(cli, "run_llm_review_for_dir", fake_run_llm_review_for_dir)
+
+    args = argparse.Namespace(
+        run_dir=str(run_dir),
+        llm_base_url="http://localhost:11434/v1",
+        llm_api_key="secret",
+        llm_model="gpt-test",
+        llm_force=True,
+        llm_max_items=5,
+    )
+
+    code = cli.run_llm_review(args)
+    output = capsys.readouterr().out
+
+    assert code == 7
+    assert seen["resolve"] == {
+        "run_dir": run_dir,
+        "base_url": "http://localhost:11434/v1",
+        "api_key": "secret",
+        "model": "gpt-test",
+    }
+    assert seen["review"] == {
+        "run_dir": run_dir,
+        "config": fake_config,
+        "force": True,
+        "max_items": 5,
+    }
+    assert "Reviewed rows: 4" in output
+    assert "Skipped rows: 3" in output
+    assert "Failed rows: 2" in output
+    assert "Keep rows: 5" in output
+    assert "Drop rows: 4" in output
+    assert f"Wrote: {run_dir / 'products_llm_review.csv'}" in output
+    assert f"Wrote: {run_dir / 'products_final_keep.csv'}" in output
+    assert f"Wrote: {run_dir / 'products_final_drop.csv'}" in output
+    assert f"Wrote: {run_dir / 'products_llm_report.html'}" in output
+
+
+def test_run_scrape_rejects_non_positive_llm_max_items():
+    args = argparse.Namespace(
+        keyword="women dress",
+        url=None,
+        category_url=None,
+        max_items=20,
+        output_dir="data",
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        pages=1,
+        blacklist_file=None,
+        reject_keyword=[],
+        browser_hardening="minimal",
+        proxy_provider="manual",
+        v2rayn_dir="",
+        proxy="",
+        proxy_file="",
+        max_blocks_per_proxy=2,
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
+        session_preflight="on",
+        llm_review=False,
+        llm_base_url="",
+        llm_api_key="",
+        llm_model="",
+        llm_force=False,
+        llm_max_items=-1,
+    )
+
+    with pytest.raises(SystemExit, match="--llm-max-items must be greater than 0"):
+        run_scrape(args)
+
+
+@pytest.mark.parametrize("scrape_exit_code", [0, 2])
+def test_run_scrape_triggers_llm_review_when_flag_enabled(monkeypatch, tmp_path, capsys, scrape_exit_code):
+    fixed_now = datetime.fromisoformat("2026-05-11T08:00:00+00:00")
+    args = argparse.Namespace(
+        keyword="home appliance accessories",
+        url=None,
+        category_url=None,
+        max_items=1,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        pages=1,
+        blacklist_file=None,
+        reject_keyword=[],
+        browser_hardening="minimal",
+        proxy_provider="manual",
+        v2rayn_dir="",
+        proxy="",
+        proxy_file="",
+        max_blocks_per_proxy=2,
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
+        session_preflight="on",
+        llm_review=True,
+        llm_base_url="",
+        llm_api_key="",
+        llm_model="",
+        llm_force=False,
+        llm_max_items=None,
+    )
+
+    class FakeDateTime:
+        @classmethod
+        def now(cls):
+            return fixed_now
+
+    seen: dict[str, object] = {}
+
+    def fake_run_new_scrape(*, manifest, groups, run_dir):
+        seen["run_dir"] = run_dir
+        run_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("products.csv", "products_filter_audit.csv", "products_review.csv", "category_rank.csv"):
+            (run_dir / name).write_text("", encoding="utf-8")
+        return cli.scrape_runner.RunResult(exit_code=scrape_exit_code, accepted_count=1, blocked=False)
+
+    def fake_run_llm_review_after_scrape(*, run_dir, args):
+        seen["llm_review"] = {"run_dir": run_dir, "args": args}
+        return 9
+
+    monkeypatch.setattr(cli, "datetime", FakeDateTime)
+    monkeypatch.setattr(cli, "load_filter_groups", lambda path, keywords: [])
+    monkeypatch.setattr(cli.scrape_runner, "run_new_scrape", fake_run_new_scrape)
+    monkeypatch.setattr(cli, "_run_llm_review_after_scrape", fake_run_llm_review_after_scrape)
+
+    code = cli.run_scrape(args)
+
+    assert code == 9
+    assert seen["llm_review"] == {"run_dir": seen["run_dir"], "args": args}
+
+
+def test_run_scrape_keeps_scrape_failure_exit_code_when_llm_review_enabled(monkeypatch, tmp_path):
+    fixed_now = datetime.fromisoformat("2026-05-11T08:00:00+00:00")
+    args = argparse.Namespace(
+        keyword="home appliance accessories",
+        url=None,
+        category_url=None,
+        max_items=1,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        pages=1,
+        blacklist_file=None,
+        reject_keyword=[],
+        browser_hardening="minimal",
+        proxy_provider="manual",
+        v2rayn_dir="",
+        proxy="",
+        proxy_file="",
+        max_blocks_per_proxy=2,
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
+        session_preflight="on",
+        llm_review=True,
+        llm_base_url="",
+        llm_api_key="",
+        llm_model="",
+        llm_force=False,
+        llm_max_items=None,
+    )
+
+    class FakeDateTime:
+        @classmethod
+        def now(cls):
+            return fixed_now
+
+    seen: dict[str, object] = {"llm_calls": 0}
+
+    def fake_run_new_scrape(*, manifest, groups, run_dir):
+        run_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("products.csv", "products_filter_audit.csv", "products_review.csv", "category_rank.csv"):
+            (run_dir / name).write_text("", encoding="utf-8")
+        return cli.scrape_runner.RunResult(exit_code=5, accepted_count=0, blocked=True)
+
+    def fake_run_llm_review_after_scrape(*, run_dir, args):
+        seen["llm_calls"] += 1
+        return 9
+
+    monkeypatch.setattr(cli, "datetime", FakeDateTime)
+    monkeypatch.setattr(cli, "load_filter_groups", lambda path, keywords: [])
+    monkeypatch.setattr(cli.scrape_runner, "run_new_scrape", fake_run_new_scrape)
+    monkeypatch.setattr(cli, "_run_llm_review_after_scrape", fake_run_llm_review_after_scrape)
+
+    code = cli.run_scrape(args)
+
+    assert code == 5
+    assert seen["llm_calls"] == 0
+
+
+def test_run_scrape_keeps_scrape_exit_code_two_when_llm_review_skips(monkeypatch, tmp_path):
+    fixed_now = datetime.fromisoformat("2026-05-11T08:00:00+00:00")
+    args = argparse.Namespace(
+        keyword="home appliance accessories",
+        url=None,
+        category_url=None,
+        max_items=1,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        pages=1,
+        blacklist_file=None,
+        reject_keyword=[],
+        browser_hardening="minimal",
+        proxy_provider="manual",
+        v2rayn_dir="",
+        proxy="",
+        proxy_file="",
+        max_blocks_per_proxy=2,
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
+        session_preflight="on",
+        llm_review=True,
+        llm_base_url="",
+        llm_api_key="",
+        llm_model="",
+        llm_force=False,
+        llm_max_items=None,
+    )
+
+    class FakeDateTime:
+        @classmethod
+        def now(cls):
+            return fixed_now
+
+    seen: dict[str, object] = {}
+
+    def fake_run_new_scrape(*, manifest, groups, run_dir):
+        seen["run_dir"] = run_dir
+        run_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("products.csv", "products_filter_audit.csv", "products_review.csv", "category_rank.csv"):
+            (run_dir / name).write_text("", encoding="utf-8")
+        return cli.scrape_runner.RunResult(exit_code=2, accepted_count=0, blocked=False)
+
+    def fake_run_llm_review_after_scrape(*, run_dir, args):
+        seen["helper_call"] = {"run_dir": run_dir, "args": args}
+        return None
+
+    monkeypatch.setattr(cli, "datetime", FakeDateTime)
+    monkeypatch.setattr(cli, "load_filter_groups", lambda path, keywords: [])
+    monkeypatch.setattr(cli.scrape_runner, "run_new_scrape", fake_run_new_scrape)
+    monkeypatch.setattr(cli, "_run_llm_review_after_scrape", fake_run_llm_review_after_scrape)
+
+    code = cli.run_scrape(args)
+
+    assert code == 2
+    assert seen["helper_call"] == {"run_dir": seen["run_dir"], "args": args}
+
+
+def test_run_llm_review_after_scrape_skips_when_products_review_missing(tmp_path, capsys):
+    args = argparse.Namespace(llm_review=True)
+
+    code = cli._run_llm_review_after_scrape(run_dir=tmp_path, args=args)
+    output = capsys.readouterr().out
+
+    assert code is None
+    assert "Skip LLM review: products_review.csv not found." in output
+
+
+def test_run_llm_review_after_scrape_skips_when_products_review_empty(monkeypatch, tmp_path, capsys):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "products_review.csv").write_text("source_type,source_value,title,product_url\n", encoding="utf-8-sig")
+    called = {"count": 0}
+
+    def fake_run_llm_review(args):
+        called["count"] += 1
+        return 9
+
+    monkeypatch.setattr(cli, "run_llm_review", fake_run_llm_review)
+
+    code = cli._run_llm_review_after_scrape(run_dir=run_dir, args=argparse.Namespace(llm_review=True))
+    output = capsys.readouterr().out
+
+    assert code is None
+    assert called["count"] == 0
+    assert "Skip LLM review: products_review.csv is empty." in output
+
+
+def test_run_llm_review_after_scrape_runs_llm_review_with_run_dir_and_args(monkeypatch, tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "products_review.csv").write_text(
+        "source_type,source_value,title,product_url\nkeyword,test,Item,https://example.test/item/1\n",
+        encoding="utf-8-sig",
+    )
+    seen: dict[str, object] = {}
+
+    def fake_run_llm_review(args):
+        seen["args"] = args
+        return 11
+
+    args = argparse.Namespace(
+        llm_review=True,
+        llm_base_url="http://localhost:11434/v1",
+        llm_api_key="secret",
+        llm_model="gpt-test",
+        llm_force=True,
+        llm_max_items=5,
+    )
+
+    monkeypatch.setattr(cli, "run_llm_review", fake_run_llm_review)
+
+    code = cli._run_llm_review_after_scrape(run_dir=run_dir, args=args)
+
+    assert code == 11
+    assert seen["args"].run_dir == str(run_dir)
+    assert seen["args"].llm_base_url == "http://localhost:11434/v1"
+    assert seen["args"].llm_api_key == "secret"
+    assert seen["args"].llm_model == "gpt-test"
+    assert seen["args"].llm_force is True
+    assert seen["args"].llm_max_items == 5
 
 
 def test_run_scrape_defaults_missing_proxy_provider_fields_for_legacy_namespace(monkeypatch, tmp_path):
