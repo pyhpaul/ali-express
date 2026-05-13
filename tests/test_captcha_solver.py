@@ -146,6 +146,15 @@ def test_is_verification_gate_page_ignores_normal_phone_words():
     assert captcha_solver._is_verification_gate_page(page) is False
 
 
+def test_is_verification_gate_page_does_not_treat_x5step_as_gate_by_itself():
+    page = FakePage(
+        url="https://www.aliexpress.com/item/1.html?x5step=1",
+        title="product",
+    )
+
+    assert captcha_solver._is_verification_gate_page(page) is False
+
+
 def test_try_solve_captcha_returns_false_for_non_slider_page(monkeypatch):
     page = FakePage(js_result=False)
     monkeypatch.setattr(captcha_solver, "_solve_slider_captcha", lambda page, timeout_seconds=30.0: True)
