@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ali_mvp.session_guard import SessionPreflightResult, run_session_preflight
+from ali_mvp.session_guard import SessionPreflightOutcome, SessionPreflightResult, run_session_preflight
 
 
 class FakePage:
@@ -30,14 +30,17 @@ def test_run_session_preflight_classifies_ready_page():
         },
     )
 
-    result = run_session_preflight(page, search_url=page.url, warm_up=False)
+    outcome = run_session_preflight(page, search_url=page.url, warm_up=True)
 
-    assert result == SessionPreflightResult(
-        status="ready",
-        risk_level="low",
-        page_type="search",
-        reasons=[],
-        warmed_up=False,
+    assert outcome == SessionPreflightOutcome(
+        result=SessionPreflightResult(
+            status="ready",
+            risk_level="low",
+            page_type="search",
+            reasons=[],
+            warmed_up=False,
+        ),
+        captcha_diagnostic=None,
     )
 
 
@@ -53,15 +56,16 @@ def test_run_session_preflight_classifies_phone_verification():
         },
     )
 
-    result = run_session_preflight(
+    outcome = run_session_preflight(
         page,
         search_url="https://www.aliexpress.com/wholesale?SearchText=home+appliance+accessories",
         warm_up=False,
     )
 
-    assert result.status == "phone_verification_required"
-    assert result.risk_level == "high"
-    assert result.reasons == ["phone_verification_required"]
+    assert outcome.result.status == "phone_verification_required"
+    assert outcome.result.risk_level == "high"
+    assert outcome.result.reasons == ["phone_verification_required"]
+    assert outcome.captcha_diagnostic is None
 
 
 def test_run_session_preflight_warm_up_rechecks_search_readiness():
@@ -85,19 +89,22 @@ def test_run_session_preflight_warm_up_rechecks_search_readiness():
         ],
     )
 
-    result = run_session_preflight(page, search_url=page.url, warm_up=True)
+    outcome = run_session_preflight(page, search_url=page.url, warm_up=True)
 
-    assert result == SessionPreflightResult(
-        status="ready",
-        risk_level="low",
-        page_type="search",
-        reasons=[],
-        warmed_up=True,
+    assert outcome == SessionPreflightOutcome(
+        result=SessionPreflightResult(
+            status="ready",
+            risk_level="low",
+            page_type="search",
+            reasons=[],
+            warmed_up=True,
+        ),
+        captcha_diagnostic=None,
     )
     assert len(page.js_calls) == 4
 
 
-def test_run_session_preflight_classifies_captcha_without_warm_up():
+def test_run_session_preflight_classifies_captcha_without_warm_up(monkeypatch):
     page = FakePage(
         "https://www.aliexpress.com/wholesale?SearchText=home+appliance+accessories",
         {
@@ -109,15 +116,39 @@ def test_run_session_preflight_classifies_captcha_without_warm_up():
         },
     )
 
-    result = run_session_preflight(page, search_url=page.url, warm_up=True)
+    monkeypatch.setattr(
+        "ali_mvp.session_guard.try_solve_captcha_with_result",
+        lambda page, timeout_seconds=30.0: (
+            False,
+            {
+                "solver_attempted": False,
+                "slider_detected": True,
+                "waited_for_ready": False,
+                "ready_wait_ms": 0,
+                "result": "failed",
+                "fail_reason": "exception",
+            },
+        ),
+    )
+    outcome = run_session_preflight(page, search_url=page.url, warm_up=False)
 
-    assert result == SessionPreflightResult(
+    assert outcome.result == SessionPreflightResult(
         status="captcha_blocked",
         risk_level="high",
         page_type="search",
         reasons=["captcha"],
         warmed_up=False,
     )
+    assert outcome.captcha_diagnostic == {
+        "solver_attempted": False,
+        "slider_detected": True,
+        "waited_for_ready": False,
+        "ready_wait_ms": 0,
+        "result": "failed",
+        "fail_reason": "exception",
+        "stage": "preflight",
+        "page_url": page.url,
+    }
 
 
 def test_run_session_preflight_rechecks_after_captcha_solver_success(monkeypatch):
@@ -140,17 +171,40 @@ def test_run_session_preflight_rechecks_after_captcha_solver_success(monkeypatch
             },
         ],
     )
-    monkeypatch.setattr("ali_mvp.session_guard.try_solve_captcha", lambda page, timeout_seconds=30.0: True)
+    monkeypatch.setattr(
+        "ali_mvp.session_guard.try_solve_captcha_with_result",
+        lambda page, timeout_seconds=30.0: (
+            True,
+            {
+                "solver_attempted": True,
+                "slider_detected": True,
+                "waited_for_ready": False,
+                "ready_wait_ms": 0,
+                "result": "solved",
+                "fail_reason": "",
+            },
+        ),
+    )
 
-    result = run_session_preflight(page, search_url=page.url, warm_up=False)
+    outcome = run_session_preflight(page, search_url=page.url, warm_up=False)
 
-    assert result == SessionPreflightResult(
+    assert outcome.result == SessionPreflightResult(
         status="ready",
         risk_level="low",
         page_type="search",
         reasons=[],
         warmed_up=False,
     )
+    assert outcome.captcha_diagnostic == {
+        "solver_attempted": True,
+        "slider_detected": True,
+        "waited_for_ready": False,
+        "ready_wait_ms": 0,
+        "result": "solved",
+        "fail_reason": "",
+        "stage": "preflight",
+        "page_url": page.url,
+    }
     assert len(page.js_calls) == 2
 
 
@@ -165,14 +219,37 @@ def test_run_session_preflight_keeps_captcha_blocked_when_solver_fails(monkeypat
             "searchResultsVisible": False,
         },
     )
-    monkeypatch.setattr("ali_mvp.session_guard.try_solve_captcha", lambda page, timeout_seconds=30.0: False)
+    monkeypatch.setattr(
+        "ali_mvp.session_guard.try_solve_captcha_with_result",
+        lambda page, timeout_seconds=30.0: (
+            False,
+            {
+                "solver_attempted": True,
+                "slider_detected": True,
+                "waited_for_ready": False,
+                "ready_wait_ms": 0,
+                "result": "failed",
+                "fail_reason": "drag_failed",
+            },
+        ),
+    )
 
-    result = run_session_preflight(page, search_url=page.url, warm_up=True)
+    outcome = run_session_preflight(page, search_url=page.url, warm_up=True)
 
-    assert result == SessionPreflightResult(
+    assert outcome.result == SessionPreflightResult(
         status="captcha_blocked",
         risk_level="high",
         page_type="search",
         reasons=["captcha"],
         warmed_up=False,
     )
+    assert outcome.captcha_diagnostic == {
+        "solver_attempted": True,
+        "slider_detected": True,
+        "waited_for_ready": False,
+        "ready_wait_ms": 0,
+        "result": "failed",
+        "fail_reason": "drag_failed",
+        "stage": "preflight",
+        "page_url": page.url,
+    }

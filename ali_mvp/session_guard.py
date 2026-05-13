@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .browser import collect_session_signals, warm_up_search_session
-from .captcha_solver import try_solve_captcha
+from .captcha_solver import try_solve_captcha_with_result
 
 
 @dataclass(frozen=True)
@@ -15,38 +15,59 @@ class SessionPreflightResult:
     warmed_up: bool
 
 
-def run_session_preflight(page, *, search_url: str, warm_up: bool) -> SessionPreflightResult:
+@dataclass(frozen=True)
+class SessionPreflightOutcome:
+    result: SessionPreflightResult
+    captcha_diagnostic: dict[str, object] | None = None
+
+    @property
+    def status(self) -> str:
+        return self.result.status
+
+    @property
+    def risk_level(self) -> str:
+        return self.result.risk_level
+
+    @property
+    def page_type(self) -> str:
+        return self.result.page_type
+
+    @property
+    def reasons(self) -> list[str]:
+        return self.result.reasons
+
+    @property
+    def warmed_up(self) -> bool:
+        return self.result.warmed_up
+
+
+def run_session_preflight(page, *, search_url: str, warm_up: bool) -> SessionPreflightOutcome:
     initial_payload = collect_session_signals(page)
     initial_result = _classify_session_payload(initial_payload)
     if initial_result.status == "captcha_blocked":
-        if try_solve_captcha(page, timeout_seconds=30.0):
+        solved, solver_diagnostic = try_solve_captcha_with_result(page, timeout_seconds=30.0)
+        captcha_diagnostic = _build_preflight_captcha_diagnostic(solver_diagnostic, page)
+        if solved:
             initial_payload = collect_session_signals(page)
             initial_result = _classify_session_payload(initial_payload)
         else:
-            return initial_result
+            return SessionPreflightOutcome(result=initial_result, captcha_diagnostic=captcha_diagnostic)
+    else:
+        captcha_diagnostic = None
 
     if initial_result.status in {"phone_verification_required", "login_required"}:
-        return initial_result
+        return SessionPreflightOutcome(result=initial_result, captcha_diagnostic=captcha_diagnostic)
 
     if initial_result.status == "search_not_ready" and warm_up:
         _run_warm_up(page, search_url=search_url)
         warmed_payload = collect_session_signals(page)
         warmed_result = _classify_session_payload(warmed_payload)
-        return SessionPreflightResult(
-            status=warmed_result.status,
-            risk_level=warmed_result.risk_level,
-            page_type=warmed_result.page_type,
-            reasons=warmed_result.reasons,
-            warmed_up=True,
+        return SessionPreflightOutcome(
+            result=replace(warmed_result, warmed_up=True),
+            captcha_diagnostic=captcha_diagnostic,
         )
 
-    return SessionPreflightResult(
-        status=initial_result.status,
-        risk_level=initial_result.risk_level,
-        page_type=initial_result.page_type,
-        reasons=initial_result.reasons,
-        warmed_up=False,
-    )
+    return SessionPreflightOutcome(result=initial_result, captcha_diagnostic=captcha_diagnostic)
 
 
 def _classify_session_payload(payload: dict[str, object]) -> SessionPreflightResult:
@@ -79,6 +100,18 @@ def _classify_session_payload(payload: dict[str, object]) -> SessionPreflightRes
         reasons=reasons,
         warmed_up=False,
     )
+
+
+def _build_preflight_captcha_diagnostic(
+    diagnostic: dict[str, object] | None,
+    page: object,
+) -> dict[str, object] | None:
+    if not isinstance(diagnostic, dict):
+        return None
+    enriched = dict(diagnostic)
+    enriched["stage"] = "preflight"
+    enriched["page_url"] = str(getattr(page, "url", "") or "")
+    return enriched
 
 
 def _run_warm_up(page, *, search_url: str) -> None:
