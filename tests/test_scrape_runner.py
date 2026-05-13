@@ -10,7 +10,7 @@ from ali_mvp.filtering import FilterGroup
 from ali_mvp.output import read_csv_rows
 from ali_mvp.run_state import RunManifest
 from ali_mvp.scoring import ProductRecord
-from ali_mvp.session_guard import SessionPreflightResult
+from ali_mvp.session_guard import SessionPreflightOutcome, SessionPreflightResult
 
 
 def _manifest(tmp_path, *, pages: int | None = 1, enrich_detail: bool = True) -> RunManifest:
@@ -60,19 +60,34 @@ def _product_record(*, product_url: str, title: str, scraped_at: str = "2026-05-
     )
 
 
+def _preflight_outcome(
+    *,
+    status: str = "ready",
+    risk_level: str = "low",
+    page_type: str = "search",
+    reasons: list[str] | None = None,
+    warmed_up: bool = True,
+    captcha_diagnostic: dict[str, object] | None = None,
+) -> SessionPreflightOutcome:
+    return SessionPreflightOutcome(
+        result=SessionPreflightResult(
+            status=status,
+            risk_level=risk_level,
+            page_type=page_type,
+            reasons=list(reasons or []),
+            warmed_up=warmed_up,
+        ),
+        captcha_diagnostic=captcha_diagnostic,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _default_ready_session_preflight(monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
     monkeypatch.setattr(
         scrape_runner,
         "run_session_preflight",
-        lambda page, search_url, warm_up: SessionPreflightResult(
-            status="ready",
-            risk_level="low",
-            page_type="search",
-            reasons=[],
-            warmed_up=bool(warm_up),
-        ),
+        lambda page, search_url, warm_up: _preflight_outcome(warmed_up=bool(warm_up)),
     )
 
 
@@ -148,7 +163,7 @@ def test_run_new_scrape_stops_when_session_preflight_reports_phone_verification(
     monkeypatch.setattr(
         scrape_runner,
         "run_session_preflight",
-        lambda page, search_url, warm_up: SessionPreflightResult(
+        lambda page, search_url, warm_up: _preflight_outcome(
             status="phone_verification_required",
             risk_level="high",
             page_type="verify",
@@ -181,6 +196,116 @@ def test_run_new_scrape_stops_when_session_preflight_reports_phone_verification(
     assert (tmp_path / "category_rank.csv").exists()
 
 
+def test_run_new_scrape_persists_preflight_captcha_diagnostic_with_real_outcome(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+
+    class FakePage:
+        url = "https://www.aliexpress.com/wholesale?SearchText=women+dress"
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(
+        scrape_runner,
+        "run_session_preflight",
+        lambda page, search_url, warm_up: _preflight_outcome(
+            status="ready",
+            risk_level="low",
+            page_type="search",
+            warmed_up=bool(warm_up),
+            captcha_diagnostic={
+                "stage": "preflight",
+                "page_url": FakePage.url,
+                "solver": {"status": "solved"},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        scrape_runner,
+        "_run_scrape_from_state",
+        lambda **kwargs: scrape_runner.RunResult(exit_code=0, accepted_count=0, blocked=False),
+    )
+
+    result = scrape_runner.run_new_scrape(
+        manifest=_manifest(tmp_path, pages=1, enrich_detail=False),
+        groups=[],
+        run_dir=tmp_path,
+    )
+
+    state = json.loads((tmp_path / "run_state.json").read_text(encoding="utf-8"))
+    summary = json.loads((tmp_path / "run_summary.json").read_text(encoding="utf-8"))
+
+    assert result == scrape_runner.RunResult(exit_code=0, accepted_count=0, blocked=False)
+    assert state["captcha_diagnostic"] == {
+        "page_url": FakePage.url,
+        "solver": {"status": "solved"},
+        "stage": "preflight",
+    }
+    assert summary["captcha_diagnostic"] == {
+        "page_url": FakePage.url,
+        "solver": {"status": "solved"},
+        "stage": "preflight",
+    }
+
+
+def test_run_new_scrape_persists_detail_captcha_diagnostic_when_listing_enrichment_blocks(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    manifest = _manifest(tmp_path, pages=1, enrich_detail=True)
+
+    class FakePage:
+        url = manifest.url
+
+    raw_product = {
+        "title": "Dress A",
+        "url": "https://www.aliexpress.com/item/1001.html",
+        "resolvedProductUrl": "https://www.aliexpress.com/item/1001.html",
+    }
+    detail_diagnostic = {
+        "stage": "detail",
+        "page_url": raw_product["resolvedProductUrl"],
+        "solver": {"status": "blocked"},
+    }
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(scrape_runner, "collect_listing_page_products", lambda page: [dict(raw_product)])
+    monkeypatch.setattr(scrape_runner, "dedupe_listing_products", lambda products, seen_keys: products)
+    monkeypatch.setattr(
+        scrape_runner,
+        "prefilter_listing_products",
+        lambda raw_products, groups, source_type, source_value: (raw_products, []),
+    )
+
+    def fake_detail(page, product):
+        product["_captchaDiagnostic"] = dict(detail_diagnostic)
+        product["detailStatus"] = "captcha_blocked"
+        return "captcha_blocked"
+
+    monkeypatch.setattr(scrape_runner, "enrich_single_product_detail", fake_detail)
+
+    result = scrape_runner.run_new_scrape(
+        manifest=manifest,
+        groups=[FilterGroup(name="cli_extra")],
+        run_dir=tmp_path,
+    )
+
+    state = json.loads((tmp_path / "run_state.json").read_text(encoding="utf-8"))
+    summary = json.loads((tmp_path / "run_summary.json").read_text(encoding="utf-8"))
+
+    assert result == scrape_runner.RunResult(exit_code=3, accepted_count=0, blocked=True)
+    assert state["captcha_diagnostic"] == detail_diagnostic
+    assert state["pending_detail_queue"] == [
+        {
+            "title": "Dress A",
+            "url": "https://www.aliexpress.com/item/1001.html",
+            "resolvedProductUrl": "https://www.aliexpress.com/item/1001.html",
+            "detailStatus": "captcha_blocked",
+            "_captchaDiagnostic": detail_diagnostic,
+            "_listingBaseUrl": manifest.url,
+            "_listingPageUrl": manifest.url,
+            "_listingPageNumber": 1,
+        }
+    ]
+    assert summary["captcha_diagnostic"] == detail_diagnostic
+
+
 def test_run_new_scrape_updates_captcha_cooldown_after_preflight_block(tmp_path, monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
     from ali_mvp.run_state import RunState, RunStateStore
@@ -204,7 +329,7 @@ def test_run_new_scrape_updates_captcha_cooldown_after_preflight_block(tmp_path,
     monkeypatch.setattr(
         scrape_runner,
         "run_session_preflight",
-        lambda page, search_url, warm_up: SessionPreflightResult(
+        lambda page, search_url, warm_up: _preflight_outcome(
             status="captcha_blocked",
             risk_level="high",
             page_type="verify",
@@ -224,6 +349,93 @@ def test_run_new_scrape_updates_captcha_cooldown_after_preflight_block(tmp_path,
     assert state.last_session_preflight_status == "captcha_blocked"
     assert state.consecutive_captcha_count == 2
     assert state.cooldown_until == "2026-05-11T10:00:00Z"
+
+
+def test_run_new_scrape_completed_state_preserves_existing_captcha_diagnostic(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunState, RunStateStore
+
+    manifest = _manifest(tmp_path, pages=1, enrich_detail=False)
+    existing_diagnostic = {
+        "stage": "preflight",
+        "page_url": manifest.url,
+        "solver": {"status": "solved"},
+    }
+    store = RunStateStore(tmp_path)
+    store.save_state(
+        RunState(
+            status="running",
+            captcha_diagnostic=dict(existing_diagnostic),
+        )
+    )
+
+    class FakePage:
+        url = manifest.url
+
+    raw_product = {
+        "title": "Dress Session",
+        "url": "https://www.aliexpress.com/item/1012.html",
+        "resolvedProductUrl": "https://www.aliexpress.com/item/1012.html",
+    }
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(scrape_runner, "collect_listing_page_products", lambda page: [dict(raw_product)])
+    monkeypatch.setattr(scrape_runner, "dedupe_listing_products", lambda products, seen_keys: products)
+    monkeypatch.setattr(
+        scrape_runner,
+        "prefilter_listing_products",
+        lambda raw_products, groups, source_type, source_value: (raw_products, []),
+    )
+    monkeypatch.setattr(
+        scrape_runner,
+        "normalize_products",
+        lambda products, *, source_type, source_value, scraped_at: [
+            _product_record(
+                product_url=str(product["resolvedProductUrl"]),
+                title=str(product["title"]),
+                scraped_at=scraped_at,
+            )
+            for product in products
+        ],
+    )
+    monkeypatch.setattr(
+        scrape_runner,
+        "filter_products",
+        lambda products, groups: (
+            list(products),
+            [
+                {
+                    "source_type": product.source_type,
+                    "source_value": product.source_value,
+                    "title": product.title,
+                    "product_url": product.product_url,
+                    "filter_decision": "accepted",
+                    "filter_stage": "accepted",
+                    "reject_groups": "",
+                    "reject_terms": "",
+                    "reject_fields": "",
+                    "warning_groups": "",
+                    "warning_terms": "",
+                    "warning_fields": "",
+                }
+                for product in products
+            ],
+        ),
+    )
+
+    result = scrape_runner.run_new_scrape(
+        manifest=manifest,
+        groups=[],
+        run_dir=tmp_path,
+    )
+
+    state = store.load_state()
+    summary = store.load_summary()
+
+    assert result == scrape_runner.RunResult(exit_code=0, accepted_count=1, blocked=False)
+    assert state.status == "completed"
+    assert state.captcha_diagnostic == existing_diagnostic
+    assert summary["captcha_diagnostic"] == existing_diagnostic
 
 
 def test_run_new_scrape_fails_fast_when_session_cooldown_is_active(tmp_path, monkeypatch):
@@ -406,7 +618,7 @@ def test_run_new_scrape_keeps_existing_cooldown_when_created_at_is_invalid_for_c
     monkeypatch.setattr(
         scrape_runner,
         "run_session_preflight",
-        lambda page, search_url, warm_up: SessionPreflightResult(
+        lambda page, search_url, warm_up: _preflight_outcome(
             status="captcha_blocked",
             risk_level="high",
             page_type="verify",

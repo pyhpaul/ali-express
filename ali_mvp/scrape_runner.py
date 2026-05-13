@@ -23,7 +23,7 @@ from .proxy_pool import NoHealthyProxyError, ProxyPool
 from .review import build_review_rows
 from .run_state import RunManifest, RunState, RunStateStore
 from .scoring import ProductRecord, aggregate_rank, parse_count, parse_float
-from .session_guard import SessionPreflightResult
+from .session_guard import SessionPreflightOutcome
 from .session_guard import run_session_preflight
 
 
@@ -46,6 +46,7 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
         consecutive_captcha_count=existing_state.consecutive_captcha_count,
         last_session_ok_at=existing_state.last_session_ok_at,
         cooldown_until=existing_state.cooldown_until,
+        captcha_diagnostic=dict(existing_state.captcha_diagnostic),
     )
 
     if _is_session_cooldown_active(cooldown_until=existing_state.cooldown_until, now_iso=manifest.created_at):
@@ -96,6 +97,7 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
                 risk_level=preflight.risk_level,
                 now_iso=manifest.created_at,
             )
+        running_state = _with_captcha_diagnostic(running_state, _captcha_diagnostic_from_preflight(preflight))
         if preflight is not None and preflight.status != "ready":
             failed_state = replace(
                 running_state,
@@ -332,6 +334,10 @@ def _resume_pending_details(
                 pending_detail_queue=blocked_queue,
                 last_block_reason="captcha_blocked",
                 last_blocked_url=_product_url(raw_product),
+                captcha_diagnostic=_merge_captcha_diagnostic(
+                    state.captcha_diagnostic,
+                    _captcha_diagnostic_from_product(raw_product),
+                ),
             )
             return blocked_state, True, updated_review_context_rows
         completed_products.append(raw_product)
@@ -496,20 +502,24 @@ def _run_scrape_from_state(
         checkpoint_state = _with_session_fields(
             state,
             RunState(
-            status="blocked" if blocked else "running",
-            current_listing_page=current_page,
-            raw_products_count=raw_products_count,
-            normalized_count=normalized_count,
-            accepted_count=len(accepted_products),
-            seen_product_keys=list(seen_key_order),
-            accepted_products=list(accepted_products),
-            audit_rows=list(audit_rows),
-            pending_detail_queue=pending_detail_queue,
-            current_proxy_index=proxy_pool.current_index,
-            current_proxy_key=proxy_pool.current_key(),
-            block_events_on_current_proxy=proxy_pool.block_events_on_current,
-            last_block_reason=last_block_reason,
-            last_blocked_url=last_blocked_url,
+                status="blocked" if blocked else "running",
+                current_listing_page=current_page,
+                raw_products_count=raw_products_count,
+                normalized_count=normalized_count,
+                accepted_count=len(accepted_products),
+                seen_product_keys=list(seen_key_order),
+                accepted_products=list(accepted_products),
+                audit_rows=list(audit_rows),
+                pending_detail_queue=pending_detail_queue,
+                current_proxy_index=proxy_pool.current_index,
+                current_proxy_key=proxy_pool.current_key(),
+                block_events_on_current_proxy=proxy_pool.block_events_on_current,
+                last_block_reason=last_block_reason,
+                last_blocked_url=last_blocked_url,
+                captcha_diagnostic=_merge_captcha_diagnostic(
+                    state.captcha_diagnostic,
+                    _captcha_diagnostic_from_pending_queue(pending_detail_queue),
+                ),
             ),
         )
         if blocked:
@@ -550,20 +560,20 @@ def _run_scrape_from_state(
     final_state = _with_session_fields(
         state,
         RunState(
-        status="completed",
-        current_listing_page=current_page,
-        raw_products_count=raw_products_count,
-        normalized_count=normalized_count,
-        accepted_count=len(accepted_products),
-        seen_product_keys=list(seen_key_order),
-        accepted_products=list(accepted_products),
-        audit_rows=list(audit_rows),
-        pending_detail_queue=[],
-        current_proxy_index=proxy_pool.current_index,
-        current_proxy_key=proxy_pool.current_key(),
-        block_events_on_current_proxy=proxy_pool.block_events_on_current,
-        last_block_reason="",
-        last_blocked_url="",
+            status="completed",
+            current_listing_page=current_page,
+            raw_products_count=raw_products_count,
+            normalized_count=normalized_count,
+            accepted_count=len(accepted_products),
+            seen_product_keys=list(seen_key_order),
+            accepted_products=list(accepted_products),
+            audit_rows=list(audit_rows),
+            pending_detail_queue=[],
+            current_proxy_index=proxy_pool.current_index,
+            current_proxy_key=proxy_pool.current_key(),
+            block_events_on_current_proxy=proxy_pool.block_events_on_current,
+            last_block_reason="",
+            last_blocked_url="",
         ),
     )
     store.save_state(final_state)
@@ -652,6 +662,7 @@ def _with_session_fields(existing: RunState, updated: RunState) -> RunState:
         last_session_ok_at=existing.last_session_ok_at,
         cooldown_until=existing.cooldown_until,
         identity_warning=dict(existing.identity_warning),
+        captcha_diagnostic=_merge_captcha_diagnostic(existing.captcha_diagnostic, updated.captcha_diagnostic),
     )
 
 
@@ -679,7 +690,43 @@ def _with_identity_warning(state: RunState, warning: BrowserIdentityWarning | No
     )
 
 
-def _resolve_session_preflight(*, manifest: RunManifest, page: object) -> SessionPreflightResult | None:
+def _with_captcha_diagnostic(state: RunState, diagnostic: dict[str, Any] | None) -> RunState:
+    return replace(state, captcha_diagnostic=_merge_captcha_diagnostic(state.captcha_diagnostic, diagnostic))
+
+
+def _captcha_diagnostic_from_preflight(outcome: SessionPreflightOutcome | None) -> dict[str, Any]:
+    if outcome is None:
+        return {}
+    diagnostic = outcome.captcha_diagnostic
+    if isinstance(diagnostic, dict):
+        return dict(diagnostic)
+    return {}
+
+
+def _captcha_diagnostic_from_product(product: dict[str, Any]) -> dict[str, Any]:
+    diagnostic = product.get("_captchaDiagnostic")
+    if isinstance(diagnostic, dict):
+        return dict(diagnostic)
+    return {}
+
+
+def _captcha_diagnostic_from_pending_queue(pending_queue: list[dict[str, Any]]) -> dict[str, Any]:
+    for product in pending_queue:
+        diagnostic = _captcha_diagnostic_from_product(product)
+        if diagnostic:
+            return diagnostic
+    return {}
+
+
+def _merge_captcha_diagnostic(existing: dict[str, Any], new: dict[str, Any] | None) -> dict[str, Any]:
+    if isinstance(new, dict) and new:
+        return dict(new)
+    if existing:
+        return dict(existing)
+    return {}
+
+
+def _resolve_session_preflight(*, manifest: RunManifest, page: object) -> SessionPreflightOutcome | None:
     if manifest.session_preflight != "on":
         return None
     return run_session_preflight(page, search_url=manifest.url, warm_up=True)

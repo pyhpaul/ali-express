@@ -320,6 +320,26 @@ def test_run_state_round_trips_session_risk_fields():
     assert restored.cooldown_until == "2026-05-12T10:30:00Z"
 
 
+def test_run_state_round_trips_captcha_diagnostic():
+    state = RunState(
+        status="running",
+        captcha_diagnostic={
+            "stage": "preflight",
+            "page_url": "https://www.aliexpress.com/wholesale?SearchText=women+dress",
+            "attempts": 2,
+        },
+    )
+
+    payload = state.to_dict()
+    restored = RunState.from_dict(payload)
+
+    assert restored.captcha_diagnostic == {
+        "stage": "preflight",
+        "page_url": "https://www.aliexpress.com/wholesale?SearchText=women+dress",
+        "attempts": 2,
+    }
+
+
 def test_run_state_summary_includes_full_identity_warning_structure(tmp_path):
     store = RunStateStore(tmp_path)
     state = RunState(
@@ -338,6 +358,29 @@ def test_run_state_summary_includes_full_identity_warning_structure(tmp_path):
         "code": "accept_language_mismatch",
         "configured": {"accept_language_primary": "en-US"},
         "effective": {"navigator_language": "fr-FR"},
+    }
+
+
+def test_run_state_summary_includes_captcha_diagnostic(tmp_path):
+    store = RunStateStore(tmp_path)
+    state = RunState(
+        status="blocked",
+        accepted_count=1,
+        last_block_reason="captcha_blocked",
+        last_blocked_url="https://www.aliexpress.com/item/11.html",
+        captcha_diagnostic={
+            "stage": "detail",
+            "page_url": "https://www.aliexpress.com/item/11.html",
+            "solver": {"status": "solved"},
+        },
+    )
+
+    store.save_summary(state)
+
+    assert store.load_summary()["captcha_diagnostic"] == {
+        "stage": "detail",
+        "page_url": "https://www.aliexpress.com/item/11.html",
+        "solver": {"status": "solved"},
     }
 
 

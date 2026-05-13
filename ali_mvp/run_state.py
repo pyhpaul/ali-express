@@ -85,6 +85,7 @@ class RunState:
     last_session_ok_at: str = ""
     cooldown_until: str = ""
     identity_warning: dict[str, Any] = field(default_factory=dict)
+    captcha_diagnostic: dict[str, Any] = field(default_factory=dict)
     last_error: str = ""
 
     @classmethod
@@ -110,6 +111,7 @@ class RunState:
             last_session_ok_at=payload.get("last_session_ok_at", ""),
             cooldown_until=payload.get("cooldown_until", ""),
             identity_warning=_deserialize_identity_warning(payload),
+            captcha_diagnostic=_deserialize_captcha_diagnostic(payload),
             last_error=payload.get("last_error", ""),
         )
 
@@ -135,6 +137,7 @@ class RunState:
             "last_session_ok_at": self.last_session_ok_at,
             "cooldown_until": self.cooldown_until,
             "identity_warning": dict(self.identity_warning),
+            "captcha_diagnostic": dict(self.captcha_diagnostic),
             "last_error": self.last_error,
         }
 
@@ -177,6 +180,8 @@ class RunStateStore:
         }
         if state.identity_warning:
             summary["identity_warning"] = dict(state.identity_warning)
+        if state.captcha_diagnostic:
+            summary["captcha_diagnostic"] = dict(state.captcha_diagnostic)
         return summary
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
@@ -238,6 +243,13 @@ def _deserialize_identity_warning(payload: dict[str, Any]) -> dict[str, Any]:
         "configured": {},
         "effective": {},
     }
+
+
+def _deserialize_captcha_diagnostic(payload: dict[str, Any]) -> dict[str, Any]:
+    diagnostic = payload.get("captcha_diagnostic")
+    if isinstance(diagnostic, dict):
+        return dict(diagnostic)
+    return {}
 
 
 def _normalize_browser_hardening(value: Any) -> str:
