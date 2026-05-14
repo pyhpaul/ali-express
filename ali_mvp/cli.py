@@ -91,6 +91,47 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_scrape_llm_review_args(scrape)
     scrape.set_defaults(func=run_scrape)
+    page_probe = subparsers.add_parser("page-probe", help="Probe pagination with a small raw sample per listing page.")
+    probe_source = page_probe.add_mutually_exclusive_group(required=True)
+    probe_source.add_argument("--keyword", help="AliExpress search keyword.")
+    probe_source.add_argument("--url", help="AliExpress listing or search URL.")
+    probe_source.add_argument("--category-url", help="AliExpress category URL.")
+    page_probe.add_argument("--pages", type=int, required=True, help="Maximum listing pages to probe.")
+    page_probe.add_argument("--per-page-raw-limit", type=int, required=True, help="Maximum raw listing samples kept per page.")
+    page_probe.add_argument("--output-dir", default="data/page_probe")
+    page_probe.add_argument(
+        "--user-data-dir",
+        default=".browser-profile",
+        help="Persistent Chromium profile directory for manual AliExpress login.",
+    )
+    page_probe.add_argument("--port", type=int, default=9333, help="Local Chromium remote debugging port.")
+    page_probe.add_argument("--enrich-detail", action="store_true", help="Visit sampled product detail pages for enrichment.")
+    page_probe.add_argument("--blacklist-file", help="Optional JSON blacklist file used in probe filtering.")
+    page_probe.add_argument(
+        "--reject-keyword",
+        action="append",
+        default=[],
+        help="Repeatable extra blacklist term added for this probe run.",
+    )
+    page_probe.add_argument(
+        "--browser-hardening",
+        choices=("off", "minimal"),
+        default="minimal",
+        help="Apply optional browser pacing/stealth hardening.",
+    )
+    page_probe.add_argument("--user-agent", default="", help="Optional fixed browser user agent for the full run.")
+    page_probe.add_argument(
+        "--accept-language",
+        default="en-US,en;q=0.9",
+        help="Fixed browser Accept-Language value for the full run.",
+    )
+    page_probe.add_argument(
+        "--session-preflight",
+        choices=("on", "off"),
+        default="on",
+        help="Run session preflight checks before scraping.",
+    )
+    page_probe.set_defaults(func=run_page_probe)
     postprocess = subparsers.add_parser(
         "postprocess",
         help="Generate zh outputs and review report from an existing run.",
@@ -277,6 +318,45 @@ def run_scrape(args: argparse.Namespace) -> int:
         if llm_exit_code is not None:
             return llm_exit_code
         return result.exit_code
+    return result.exit_code
+
+
+def run_page_probe(args: argparse.Namespace) -> int:
+    source_type, source_value, url = _resolve_source(args)
+    browser_hardening = getattr(args, "browser_hardening", "minimal")
+    session_preflight = getattr(args, "session_preflight", "on")
+    if args.pages < 1:
+        raise SystemExit("--pages must be greater than 0")
+    if args.per_page_raw_limit < 1:
+        raise SystemExit("--per-page-raw-limit must be greater than 0")
+
+    run_at = datetime.now().replace(microsecond=0)
+    run_dir = build_output_dir(Path(args.output_dir), source_type=source_type, source_value=source_value, run_at=run_at)
+    groups = load_filter_groups(args.blacklist_file, args.reject_keyword)
+    result = scrape_runner.run_page_probe(
+        source_type=source_type,
+        source_value=source_value,
+        url=url,
+        pages=args.pages,
+        per_page_raw_limit=args.per_page_raw_limit,
+        run_dir=run_dir,
+        user_data_dir=args.user_data_dir,
+        port=args.port,
+        enrich_detail=args.enrich_detail,
+        groups=groups,
+        browser_hardening=browser_hardening,
+        blacklist_file=args.blacklist_file,
+        reject_keyword=list(args.reject_keyword),
+        user_agent=args.user_agent,
+        accept_language=args.accept_language,
+        session_preflight=session_preflight,
+    )
+    print(f"Accepted products: {result.accepted_count}")
+    print(f"Wrote: {run_dir / 'products.csv'}")
+    print(f"Wrote: {run_dir / 'products_filter_audit.csv'}")
+    print(f"Wrote: {run_dir / 'products_review.csv'}")
+    print(f"Wrote: {run_dir / 'category_rank.csv'}")
+    print(f"Wrote: {run_dir / 'page_probe_summary.csv'}")
     return result.exit_code
 
 

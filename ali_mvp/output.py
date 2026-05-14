@@ -163,6 +163,16 @@ FILTER_AUDIT_ZH_FIELDS = FILTER_AUDIT_FIELDS + [
     "review_note",
 ]
 
+PAGE_PROBE_SUMMARY_FIELDS = [
+    "listing_page",
+    "raw_seen",
+    "raw_sampled",
+    "normalized",
+    "accepted",
+    "blocked_reason",
+    "blocked_url",
+]
+
 
 def write_products_csv(path: Path, products: Iterable[ProductRecord]) -> None:
     _write_dataclass_csv(path, PRODUCT_FIELDS, products)
@@ -178,6 +188,10 @@ def write_filter_audit_csv(path: Path, rows: Iterable[dict[str, str]]) -> None:
 
 def write_llm_review_csv(path: Path, rows: Iterable[Mapping[str, object]]) -> None:
     write_dict_csv(path, LLM_REVIEW_FIELDS, rows)
+
+
+def write_page_probe_summary_csv(path: Path, rows: Iterable[Mapping[str, object]]) -> None:
+    write_dict_csv(path, PAGE_PROBE_SUMMARY_FIELDS, rows)
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
