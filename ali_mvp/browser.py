@@ -8,6 +8,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from DrissionPage import ChromiumOptions, ChromiumPage
+from DrissionPage.errors import ContextLostError
+
+
+_MISSING = object()
+_NAVIGATION_CONTEXT_LOST = object()
 
 
 PRODUCT_SCRIPT = r"""
@@ -267,14 +272,14 @@ def collect_listing_page_products(page: ChromiumPage, *, scroll_rounds: int = 8)
 
 
 def collect_session_signals(page: ChromiumPage) -> dict[str, object]:
-    payload = page.run_js(SESSION_PREFLIGHT_SCRIPT)
+    payload = _run_js_with_context_retry(page, SESSION_PREFLIGHT_SCRIPT)
     return dict(payload) if isinstance(payload, dict) else {}
 
 
 def collect_browser_identity(page: ChromiumPage) -> dict[str, object]:
     if not hasattr(page, "run_js"):
         return {"user_agent": "", "language": "", "languages": []}
-    payload = page.run_js(IDENTITY_SCRIPT)
+    payload = _run_js_with_context_retry(page, IDENTITY_SCRIPT)
     if not isinstance(payload, dict):
         return {"user_agent": "", "language": "", "languages": []}
     languages = payload.get("languages")
@@ -319,10 +324,10 @@ def _collect_current_page(page: ChromiumPage, *, scroll_rounds: int) -> list[dic
     for _ in range(scroll_rounds):
         _human_scroll_step(page)
         _sleep_jitter(0.8, 1.2)
-        raw = page.run_js(PRODUCT_SCRIPT)
+        raw = _run_js_with_context_retry(page, PRODUCT_SCRIPT, default=None)
         if isinstance(raw, list) and len(raw) >= len(best):
             best = _prepare_listing_products(raw)
-    raw = page.run_js(PRODUCT_SCRIPT)
+    raw = _run_js_with_context_retry(page, PRODUCT_SCRIPT, default=None)
     if isinstance(raw, list) and len(raw) >= len(best):
         return _prepare_listing_products(raw)
     return best
@@ -333,12 +338,12 @@ def _go_to_next_page(page: ChromiumPage, target_page: int) -> bool:
         return False
     old_signature = _page_signature(page)
     _sleep_jitter(0.2, 0.6)
-    clicked = page.run_js(NEXT_PAGE_SCRIPT.replace("__TARGET_PAGE__", str(target_page)))
-    if not clicked:
+    clicked = _run_navigation_script(page, NEXT_PAGE_SCRIPT.replace("__TARGET_PAGE__", str(target_page)))
+    if not clicked and clicked is not _NAVIGATION_CONTEXT_LOST:
         return False
     if not _wait_for_listing_change(page, old_signature):
         return False
-    page.run_js("window.scrollTo(0, 0);")
+    _run_js_with_context_retry(page, "window.scrollTo(0, 0);", default=None)
     _pause_after_navigation()
     return True
 
@@ -347,14 +352,21 @@ def _scroll_to_pagination(page: ChromiumPage, rounds: int = 12) -> bool:
     last_height = -1
     stable_rounds = 0
     for _ in range(rounds):
-        if page.run_js(PAGINATION_READY_SCRIPT):
+        if _run_js_with_context_retry(page, PAGINATION_READY_SCRIPT, default=False):
             return True
-        height = page.run_js(
+        height = _run_js_with_context_retry(
+            page,
             "return Math.max(document.body.scrollHeight || 0, document.documentElement.scrollHeight || 0);"
+            ,
+            default=last_height,
         )
-        page.run_js("window.scrollTo(0, Math.max(document.body.scrollHeight || 0, document.documentElement.scrollHeight || 0));")
+        _run_js_with_context_retry(
+            page,
+            "window.scrollTo(0, Math.max(document.body.scrollHeight || 0, document.documentElement.scrollHeight || 0));",
+            default=None,
+        )
         _sleep_jitter(0.8, 1.2)
-        if page.run_js(PAGINATION_READY_SCRIPT):
+        if _run_js_with_context_retry(page, PAGINATION_READY_SCRIPT, default=False):
             return True
         if height == last_height:
             stable_rounds += 1
@@ -363,7 +375,7 @@ def _scroll_to_pagination(page: ChromiumPage, rounds: int = 12) -> bool:
             last_height = height
         if stable_rounds >= 3:
             break
-    return bool(page.run_js(PAGINATION_READY_SCRIPT))
+    return bool(_run_js_with_context_retry(page, PAGINATION_READY_SCRIPT, default=False))
 
 
 def _wait_for_listing_change(
@@ -385,7 +397,7 @@ def _wait_for_listing_change(
 
 
 def _page_signature(page: ChromiumPage) -> tuple[str, ...]:
-    raw = page.run_js(PRODUCT_SCRIPT)
+    raw = _run_js_with_context_retry(page, PRODUCT_SCRIPT, default=[])
     if not isinstance(raw, list):
         return ()
     return _product_signature(raw)
@@ -659,7 +671,7 @@ def enrich_single_product_detail(page: ChromiumPage, product: dict[str, object])
             if promo_url:
                 page.get(promo_url)
                 time.sleep(2)
-                promo = page.run_js(PROMO_FIELDS_SCRIPT)
+                promo = _run_js_with_context_retry(page, PROMO_FIELDS_SCRIPT)
                 if isinstance(promo, dict):
                     product.update(promo)
                 if has_listing_context and not _restore_listing_context(page, product, listing_url):
@@ -680,7 +692,7 @@ def enrich_single_product_detail(page: ChromiumPage, product: dict[str, object])
             if not _wait_for_captcha_resolution(detail_page):
                 product["detailStatus"] = "captcha_blocked"
                 return "captcha_blocked"
-        raw_detail = detail_page.run_js(DETAIL_FIELDS_SCRIPT)
+        raw_detail = _run_js_with_context_retry(detail_page, DETAIL_FIELDS_SCRIPT)
         if isinstance(raw_detail, dict):
             detail = _normalize_detail_fields(raw_detail)
             product.update(detail)
@@ -767,9 +779,10 @@ def _open_detail_from_listing_context(page: ChromiumPage, product: dict[str, obj
     before_tabs = list(getattr(page, "tab_ids", []) or [])
     before_tab_id = str(getattr(page, "tab_id", "") or "")
     script = _detail_click_script(product)
-    clicked = page.run_js(script)
+    clicked = _run_navigation_script(page, script)
     if clicked in {"clicked", "navigated"}:
         _wait_for_page_ready(page)
+    if clicked in {"clicked", "navigated"} or clicked is _NAVIGATION_CONTEXT_LOST:
         after_url = str(getattr(page, "url", "") or "")
         if after_url and after_url != before_url and "/item/" in after_url:
             product["_detailUsedNewTab"] = False
@@ -822,6 +835,35 @@ def _wait_for_page_ready(page: ChromiumPage, timeout_seconds: float = 8.0) -> No
         if str(ready or "").lower() == "complete":
             return
         time.sleep(0.2)
+
+
+def _run_js_with_context_retry(
+    page: ChromiumPage,
+    script: str,
+    *,
+    retries: int = 2,
+    default: object = _MISSING,
+) -> object:
+    for attempt in range(retries + 1):
+        try:
+            return page.run_js(script)
+        except ContextLostError:
+            if attempt >= retries:
+                if default is _MISSING:
+                    raise
+                return default
+            _wait_for_page_ready(page)
+    if default is _MISSING:
+        raise RuntimeError("unreachable")
+    return default
+
+
+def _run_navigation_script(page: ChromiumPage, script: str) -> object:
+    try:
+        return page.run_js(script)
+    except ContextLostError:
+        _wait_for_page_ready(page)
+        return _NAVIGATION_CONTEXT_LOST
 
 
 def _detail_click_script(product: dict[str, object]) -> str:
@@ -1119,7 +1161,7 @@ def _sleep_jitter(min_s: float, max_s: float) -> None:
 
 def _human_scroll_step(page: ChromiumPage) -> None:
     distance = random.randint(700, 1100)
-    page.run_js(f"window.scrollBy(0, {distance});")
+    _run_js_with_context_retry(page, f"window.scrollBy(0, {distance});", default=None)
 
 
 def _pause_after_navigation() -> None:

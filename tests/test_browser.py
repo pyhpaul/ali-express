@@ -1,5 +1,7 @@
 import json
 
+from DrissionPage.errors import ContextLostError
+
 from ali_mvp import browser
 from ali_mvp.browser import NEXT_PAGE_SCRIPT, PRODUCT_SCRIPT
 
@@ -301,6 +303,54 @@ def test_go_to_next_page_requires_product_signature_change(monkeypatch):
     assert browser._go_to_next_page(FakePage(), 2) is False
 
 
+def test_scroll_to_pagination_retries_after_context_lost(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.ready_calls = 0
+
+        def run_js(self, script):
+            if script == browser.PAGINATION_READY_SCRIPT:
+                self.ready_calls += 1
+                if self.ready_calls == 1:
+                    raise ContextLostError()
+                if self.ready_calls == 2:
+                    return False
+                return True
+            if script.startswith("return Math.max("):
+                return 1200
+            if script.startswith("window.scrollTo(0, Math.max("):
+                return None
+            raise AssertionError(script)
+
+    monkeypatch.setattr(browser, "_sleep_jitter", lambda min_s, max_s: None)
+    monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
+
+    assert browser._scroll_to_pagination(FakePage(), rounds=2) is True
+
+
+def test_wait_for_listing_change_retries_after_context_lost(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.calls = 0
+
+        def run_js(self, script):
+            assert script == PRODUCT_SCRIPT
+            self.calls += 1
+            if self.calls == 1:
+                raise ContextLostError()
+            return [{"url": f"https://www.aliexpress.com/item/{1000 + self.calls}.html"}]
+
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
+
+    assert browser._wait_for_listing_change(
+        FakePage(),
+        ("1001",),
+        timeout_seconds=0.05,
+        interval_seconds=0,
+    ) is True
+
+
 def test_collect_current_page_returns_all_products_without_max_items_cap(monkeypatch):
     class FakePage:
         def run_js(self, script):
@@ -321,6 +371,59 @@ def test_collect_current_page_returns_all_products_without_max_items_cap(monkeyp
         "https://www.aliexpress.com/item/2.html",
         "https://www.aliexpress.com/item/3.html",
     ]
+
+
+def test_collect_current_page_retries_after_context_lost(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.product_calls = 0
+
+        def run_js(self, script):
+            if script == PRODUCT_SCRIPT:
+                self.product_calls += 1
+                if self.product_calls == 1:
+                    raise ContextLostError()
+                return [{"url": "https://www.aliexpress.com/item/1.html"}]
+            if script.startswith("window.scrollBy(0, "):
+                return None
+            return None
+
+    monkeypatch.setattr(browser, "_sleep_jitter", lambda min_s, max_s: None)
+    monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
+
+    products = browser._collect_current_page(FakePage(), scroll_rounds=1)
+
+    assert [product["url"] for product in products] == [
+        "https://www.aliexpress.com/item/1.html",
+    ]
+
+
+def test_go_to_next_page_succeeds_when_click_triggers_context_lost(monkeypatch):
+    class FakePage:
+        url = "https://www.aliexpress.com/wholesale?SearchText=women+dress"
+
+        def __init__(self):
+            self.after_click = False
+
+        def run_js(self, script):
+            if script == PRODUCT_SCRIPT:
+                if self.after_click:
+                    return [{"url": "https://www.aliexpress.com/item/100500002.html"}]
+                return [{"url": "https://www.aliexpress.com/item/100500001.html"}]
+            if "const targetPage = 2;" in script:
+                self.after_click = True
+                raise ContextLostError()
+            if script == "window.scrollTo(0, 0);":
+                return None
+            raise AssertionError(script)
+
+    monkeypatch.setattr(browser, "_scroll_to_pagination", lambda page: True)
+    monkeypatch.setattr(browser, "_sleep_jitter", lambda min_s, max_s: None)
+    monkeypatch.setattr(browser, "_pause_after_navigation", lambda: None)
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page, timeout_seconds=8.0: None)
+
+    assert browser._go_to_next_page(FakePage(), 2) is True
 
 
 def test_finalize_products_applies_total_cap_once():
@@ -1013,6 +1116,43 @@ def test_open_detail_from_listing_context_clicks_card_and_waits_for_navigation(m
     assert page.url == "https://www.aliexpress.com/item/1001.html"
     assert wait_calls == [("https://www.aliexpress.com/item/1001.html", "detail")]
     assert any('window.__ALI_MVP_DETAIL_CLICK__' in script for script in calls)
+
+
+def test_open_detail_from_listing_context_handles_context_lost_after_navigation(monkeypatch):
+    wait_calls: list[tuple[str, str]] = []
+
+    class FakePage:
+        def __init__(self):
+            self.url = "https://www.aliexpress.com/w/wholesale-home-appliance-accessories.html"
+            self.title = "listing"
+            self.tab_id = "listing-tab"
+            self.tab_ids = ["listing-tab"]
+            self.latest_tab = "listing-tab"
+
+        def run_js(self, script):
+            if "window.__ALI_MVP_DETAIL_CLICK__" in script:
+                self.url = "https://www.aliexpress.com/item/1001.html"
+                self.title = "detail"
+                raise ContextLostError()
+            if script == "return document.readyState;":
+                return "complete"
+            return None
+
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(browser, "_wait_for_page_ready", lambda page: wait_calls.append((page.url, page.title)))
+
+    product = {
+        "cardUrl": "https://www.aliexpress.com/item/1001.html?from=search",
+        "resolvedProductUrl": "https://www.aliexpress.com/item/1001.html",
+    }
+
+    page = FakePage()
+    opened = browser._open_detail_from_listing_context(page, product)
+
+    assert opened is True
+    assert page.url == "https://www.aliexpress.com/item/1001.html"
+    assert product["_detailUsedNewTab"] is False
+    assert wait_calls == [("https://www.aliexpress.com/item/1001.html", "detail")]
 
 
 def test_open_detail_from_listing_context_requires_leaving_listing_page(monkeypatch):
