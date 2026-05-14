@@ -11,7 +11,22 @@ python -m venv .venv
 
 ## LLM Review Setup
 
-Configure the OpenAI-compatible endpoint in a local project `.env` file:
+Prefer selecting a non-secret LLM profile in the local project `.env` file:
+
+```dotenv
+ALI_MVP_LLM_PROFILE=cheap-review
+ALI_MVP_LLM_MODEL=gpt-5.4
+```
+
+The selected profile is read from `LLM_PROFILES_PATH` or the platform default profile file:
+
+- Windows: `%USERPROFILE%\.config\llm-profiles\profiles.toml`
+- WSL/Linux: `~/.config/llm-profiles/profiles.toml`
+- Linux server fallback: `/etc/llm-profiles/profiles.toml`
+
+Each profile stores `base_url`, `model`, and `api_key_env`; the real API key stays in the environment variable named by `api_key_env`.
+
+Legacy explicit `.env` values are still supported for temporary overrides:
 
 ```dotenv
 ALI_MVP_LLM_BASE_URL=https://example.test/v1
@@ -19,11 +34,15 @@ ALI_MVP_LLM_API_KEY=sk-example
 ALI_MVP_LLM_MODEL=gpt-4.1-mini
 ```
 
-CLI flags can override `.env` for a single run:
+Resolution order is: CLI arguments, explicit `ALI_MVP_LLM_*` values, selected profile, then standard `OPENAI_*` environment variables.
+
+CLI flags can override config for a single run:
 
 - `--llm-base-url`
 - `--llm-api-key`
 - `--llm-model`
+
+See `docs/llm-profile-config.md` for the cross-project Windows/WSL/server setup.
 
 ## Login
 

@@ -1,0 +1,20 @@
+default_text_profile = "cheap-review"
+default_image_profile = "gpt-image"
+
+[profiles.cheap-review]
+provider = "openai-compatible"
+base_url = "https://provider.example.test"
+api_key_env = "OPENAI_DEV_API_KEY"
+model = "gpt-5.4"
+
+[profiles.gpt-dev]
+provider = "openai-compatible"
+base_url = "https://provider.example.test"
+api_key_env = "OPENAI_DEV_API_KEY"
+model = "gpt-5.5"
+
+[profiles.gpt-image]
+provider = "openai-compatible"
+base_url = "https://image-provider.example.test"
+api_key_env = "OPENAI_IMAGE_API_KEY"
+model = "gpt-image-2"

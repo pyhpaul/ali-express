@@ -12,6 +12,25 @@ from ali_mvp.llm_client import (
 )
 
 
+_LLM_ENV_KEYS = (
+    "ALI_MVP_LLM_BASE_URL",
+    "ALI_MVP_LLM_API_KEY",
+    "ALI_MVP_LLM_MODEL",
+    "ALI_MVP_LLM_PROFILE",
+    "LLM_PROFILE",
+    "LLM_PROFILES_PATH",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "ALI_TEST_PROFILE_KEY",
+)
+
+
+def _clear_llm_env(monkeypatch):
+    for key in _LLM_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
 def test_resolve_llm_config_prefers_cli_over_dotenv(tmp_path: Path):
     env_path = tmp_path / ".env"
     env_path.write_text(
@@ -41,7 +60,8 @@ def test_resolve_llm_config_prefers_cli_over_dotenv(tmp_path: Path):
     )
 
 
-def test_resolve_llm_config_raises_when_required_values_missing(tmp_path: Path):
+def test_resolve_llm_config_raises_when_required_values_missing(tmp_path: Path, monkeypatch):
+    _clear_llm_env(monkeypatch)
     env_path = tmp_path / ".env"
     env_path.write_text("", encoding="utf-8")
 
@@ -172,7 +192,8 @@ def test_resolve_llm_config_supports_utf8_sig_export_and_inline_comments(tmp_pat
     )
 
 
-def test_resolve_llm_config_ignores_dotenv_directory(tmp_path: Path):
+def test_resolve_llm_config_ignores_dotenv_directory(tmp_path: Path, monkeypatch):
+    _clear_llm_env(monkeypatch)
     (tmp_path / ".env").mkdir()
 
     with pytest.raises(ValueError, match="Missing LLM configuration: base_url, api_key, model"):
@@ -181,7 +202,97 @@ def test_resolve_llm_config_ignores_dotenv_directory(tmp_path: Path):
             base_url="",
             api_key="",
             model="",
+            env_path=tmp_path / ".env",
         )
+
+
+def test_resolve_llm_config_uses_selected_profile_registry(tmp_path: Path, monkeypatch):
+    _clear_llm_env(monkeypatch)
+    env_path = tmp_path / ".env"
+    env_path.write_text("ALI_MVP_LLM_PROFILE=cheap-review\n", encoding="utf-8")
+    profiles_path = tmp_path / "profiles.toml"
+    profiles_path.write_text(
+        "\n".join(
+            [
+                '[profiles."cheap-review"]',
+                'base_url = "https://profile.example"',
+                'api_key_env = "ALI_TEST_PROFILE_KEY"',
+                'model = "profile-model"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ALI_TEST_PROFILE_KEY", "profile-secret")
+
+    config = resolve_llm_config(
+        tmp_path / "data" / "slug" / "20260513-120000",
+        base_url="",
+        api_key="",
+        model="",
+        env_path=env_path,
+        profiles_path=profiles_path,
+    )
+
+    assert config == LlmConfig(
+        base_url="https://profile.example/v1",
+        api_key="profile-secret",
+        model="profile-model",
+        provider="openai-compatible",
+    )
+
+
+def test_resolve_llm_config_uses_profiles_path_from_environment(tmp_path: Path, monkeypatch):
+    _clear_llm_env(monkeypatch)
+    env_path = tmp_path / ".env"
+    env_path.write_text("ALI_MVP_LLM_PROFILE=cheap-review\n", encoding="utf-8")
+    profiles_path = tmp_path / "profiles.toml"
+    profiles_path.write_text(
+        "\n".join(
+            [
+                '[profiles."cheap-review"]',
+                'base_url = "https://profile.example/v1"',
+                'api_key_env = "ALI_TEST_PROFILE_KEY"',
+                'model = "profile-model"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LLM_PROFILES_PATH", str(profiles_path))
+    monkeypatch.setenv("ALI_TEST_PROFILE_KEY", "profile-secret")
+
+    config = resolve_llm_config(
+        tmp_path / "data" / "slug" / "20260513-120000",
+        base_url="",
+        api_key="",
+        model="",
+        env_path=env_path,
+    )
+
+    assert config.api_key == "profile-secret"
+    assert config.base_url == "https://profile.example/v1"
+    assert config.model == "profile-model"
+
+
+def test_resolve_llm_config_uses_standard_openai_environment_fallback(tmp_path: Path, monkeypatch):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://standard.example")
+    monkeypatch.setenv("OPENAI_API_KEY", "standard-secret")
+    monkeypatch.setenv("OPENAI_MODEL", "standard-model")
+
+    config = resolve_llm_config(
+        tmp_path / "data" / "slug" / "20260513-120000",
+        base_url="",
+        api_key="",
+        model="",
+        env_path=tmp_path / "missing.env",
+    )
+
+    assert config == LlmConfig(
+        base_url="https://standard.example/v1",
+        api_key="standard-secret",
+        model="standard-model",
+        provider="openai-compatible",
+    )
 
 
 def test_request_llm_review_parses_json_string_content(monkeypatch):
