@@ -34,6 +34,7 @@ class LlmConfig:
 class LlmProfile:
     name: str
     base_url: str
+    api_key: str
     api_key_env: str
     model: str
     provider: str = "openai-compatible"
@@ -199,6 +200,7 @@ def _read_profile(profile_name: str, profiles_path: Path) -> LlmProfile:
     return LlmProfile(
         name=profile_name,
         base_url=_string_value(raw_profile.get("base_url")),
+        api_key=_string_value(raw_profile.get("api_key")),
         api_key_env=_string_value(raw_profile.get("api_key_env")),
         model=_string_value(raw_profile.get("model")),
         provider=_string_value(raw_profile.get("provider")) or "openai-compatible",
@@ -206,7 +208,11 @@ def _read_profile(profile_name: str, profiles_path: Path) -> LlmProfile:
 
 
 def _profile_api_key(profile: LlmProfile | None, environ: os._Environ[str]) -> str:
-    if profile is None or not profile.api_key_env:
+    if profile is None:
+        return ""
+    if profile.api_key:
+        return profile.api_key
+    if not profile.api_key_env:
         return ""
     return environ.get(profile.api_key_env, "")
 

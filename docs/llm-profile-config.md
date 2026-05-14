@@ -5,8 +5,8 @@
 多个项目、Windows、WSL、云服务器共用同一套 LLM 配置协议：
 
 - 项目只选择 profile，不保存明文 API key。
-- profile 描述用途、base URL、模型和密钥环境变量名。
-- 真正的 API key 只放在当前运行环境的环境变量或 secret manager 中。
+- profile 描述用途、base URL、模型，以及 `api_key` 或 `api_key_env`。
+- 机器本地全局 profile 可以直接保存 API key；仓库内模板仍建议使用 `api_key_env`。
 
 ## 当前项目用法
 
@@ -39,25 +39,28 @@ default_image_profile = "gpt-image"
 [profiles.cheap-review]
 provider = "openai-compatible"
 base_url = "https://sub2.de5.net"
-api_key_env = "OPENAI_DEV_API_KEY"
+api_key = "sk-local-only"
+# 或者改成：
+# api_key_env = "OPENAI_DEV_API_KEY"
 model = "gpt-5.4"
 
 [profiles.gpt-dev]
 provider = "openai-compatible"
 base_url = "https://sub2.de5.net"
-api_key_env = "OPENAI_DEV_API_KEY"
+api_key = "sk-local-only"
 model = "gpt-5.5"
 
 [profiles.gpt-image]
 provider = "openai-compatible"
-base_url = "https://image-api.example.test"
-api_key_env = "OPENAI_IMAGE_API_KEY"
+base_url = "https://sub2.de5.net"
+api_key = "sk-local-only"
 model = "gpt-image-2"
 ```
 
 当前项目只读取：
 
 - `base_url`
+- `api_key`
 - `api_key_env`
 - `model`
 - `provider`
@@ -66,15 +69,35 @@ model = "gpt-image-2"
 
 ## API key 配置
 
-Profile 文件不要写真实 API key，只写环境变量名：
+当前支持两种写法：
+
+### 方案 A：机器本地全局 profile 直接存 `api_key`
+
+适合当前这台机器自己用的 `%USERPROFILE%\.config\llm-profiles\profiles.toml`：
+
+```toml
+[profiles.cheap-review]
+provider = "openai-compatible"
+base_url = "https://sub2.de5.net"
+api_key = "sk-local-only"
+model = "gpt-5.4"
+```
+
+这个文件不要提交到仓库。
+
+### 方案 B：profile 只存 `api_key_env`
+
+适合需要跨 Windows / WSL / 服务器复用同一份模板，或不想把 key 放进 profile 文件时：
 
 ```toml
 api_key_env = "OPENAI_DEV_API_KEY"
 ```
 
+当同一个 profile 同时写了 `api_key` 和 `api_key_env` 时，当前实现优先使用 `api_key`。
+
 ### Windows PowerShell
 
-持久写入当前 Windows 用户环境变量：
+若使用 `api_key_env`，持久写入当前 Windows 用户环境变量：
 
 ```powershell
 [Environment]::SetEnvironmentVariable("OPENAI_DEV_API_KEY", "你的key", "User")
@@ -85,7 +108,7 @@ api_key_env = "OPENAI_DEV_API_KEY"
 
 ### WSL
 
-写入 `~/.profile`、`~/.bashrc` 或 `~/.zshrc`：
+若使用 `api_key_env`，写入 `~/.profile`、`~/.bashrc` 或 `~/.zshrc`：
 
 ```bash
 export OPENAI_DEV_API_KEY="你的key"
@@ -132,6 +155,8 @@ model = "gpt-5.5"
 5. 标准 fallback：`OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`。
 
 项目仓库可以提交 `config/llm-profiles.example.toml` 作为模板，但不要提交真实 `profiles.toml` 或 API key。
+
+不要让项目运行时直接依赖 `~/.codex/auth.json` 这类工具内部文件；如果要复用其中的 key，建议一次性同步到你自己的全局 `profiles.toml`。
 
 ## Profile 命名建议
 

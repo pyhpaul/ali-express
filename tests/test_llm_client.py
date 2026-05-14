@@ -241,6 +241,40 @@ def test_resolve_llm_config_uses_selected_profile_registry(tmp_path: Path, monke
     )
 
 
+def test_resolve_llm_config_uses_api_key_stored_in_selected_profile(tmp_path: Path, monkeypatch):
+    _clear_llm_env(monkeypatch)
+    env_path = tmp_path / ".env"
+    env_path.write_text("ALI_MVP_LLM_PROFILE=cheap-review\n", encoding="utf-8")
+    profiles_path = tmp_path / "profiles.toml"
+    profiles_path.write_text(
+        "\n".join(
+            [
+                '[profiles."cheap-review"]',
+                'base_url = "https://profile.example"',
+                'api_key = "profile-inline-secret"',
+                'model = "profile-model"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_llm_config(
+        tmp_path / "data" / "slug" / "20260513-120000",
+        base_url="",
+        api_key="",
+        model="",
+        env_path=env_path,
+        profiles_path=profiles_path,
+    )
+
+    assert config == LlmConfig(
+        base_url="https://profile.example/v1",
+        api_key="profile-inline-secret",
+        model="profile-model",
+        provider="openai-compatible",
+    )
+
+
 def test_resolve_llm_config_uses_profiles_path_from_environment(tmp_path: Path, monkeypatch):
     _clear_llm_env(monkeypatch)
     env_path = tmp_path / ".env"

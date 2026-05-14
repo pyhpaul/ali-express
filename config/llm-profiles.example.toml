@@ -1,6 +1,10 @@
 default_text_profile = "cheap-review"
 default_image_profile = "gpt-image"
 
+# Repo-shared templates should keep using api_key_env.
+# For your machine-local global profiles.toml, you can replace api_key_env
+# with api_key = "sk-local-only" so projects only select a profile.
+
 [profiles.cheap-review]
 provider = "openai-compatible"
 base_url = "https://provider.example.test"

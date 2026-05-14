@@ -24,7 +24,8 @@ The selected profile is read from `LLM_PROFILES_PATH` or the platform default pr
 - WSL/Linux: `~/.config/llm-profiles/profiles.toml`
 - Linux server fallback: `/etc/llm-profiles/profiles.toml`
 
-Each profile stores `base_url`, `model`, and `api_key_env`; the real API key stays in the environment variable named by `api_key_env`.
+Each profile stores `base_url`, `model`, and either `api_key` or `api_key_env`.
+For a machine-local global profile you can store `api_key` directly; for repo-shared templates, keep using `api_key_env` so secrets stay out of versioned files.
 
 Legacy explicit `.env` values are still supported for temporary overrides:
 
