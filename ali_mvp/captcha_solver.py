@@ -21,6 +21,9 @@ _CAPTCHA_CONTAINER_ID = "baxia-punish"
 _CAPTCHA_URL_MARKER = "_____tmd_____"
 _SLIDER_READY_WAIT_SECONDS = 1.5
 _SLIDER_READY_POLL_SECONDS = 0.1
+_SLIDER_DISTANCE_OVERSHOOT = 0.1
+_MAX_SLIDER_RETRIES = 3
+_FAILURE_RETRY_TEXT = "验证失败，点击框体重试"
 
 
 @dataclass
@@ -66,7 +69,7 @@ return (() => {
     return bool(payload)
 
 
-def _get_slider_distance(page: ChromiumPage) -> int:
+def _get_slider_distance(page: ChromiumPage, overshoot: float = _SLIDER_DISTANCE_OVERSHOOT) -> int:
     try:
         payload = page.run_js(
             r"""
@@ -82,7 +85,10 @@ return (() => {
     except Exception:
         return 0
     try:
-        return int(payload) if payload else 0
+        base_distance = int(payload) if payload else 0
+        if base_distance > 0 and overshoot > 0:
+            base_distance = int(base_distance * (1.0 + overshoot))
+        return base_distance
     except (TypeError, ValueError):
         return 0
 
@@ -152,6 +158,133 @@ def _wait_for_condition(condition, timeout_seconds: float) -> bool:
         time.sleep(_SLIDER_READY_POLL_SECONDS)
 
 
+def _find_retry_button(page: ChromiumPage):
+    selectors = [
+        "#nc_1_refresh1",
+        ".nc-lang-cnt .btn_refresh",
+        "[class*='btn_refresh']",
+        "[class*='refresh']",
+        ".nc_iconfont.btn_refresh",
+    ]
+    for selector in selectors:
+        try:
+            button = page.ele(selector)
+            if button:
+                return button
+        except Exception:
+            continue
+    return None
+
+
+def _click_retry_button(page: ChromiumPage) -> bool:
+    button = _find_retry_button(page)
+    if not button:
+        return False
+    try:
+        button.click()
+        time.sleep(0.5)
+        return True
+    except Exception:
+        return False
+
+
+def _find_failure_retry_element(page: ChromiumPage):
+    try:
+        elements = page.eles(f"text={_FAILURE_RETRY_TEXT}")
+        if elements:
+            return elements[0]
+    except Exception:
+        pass
+
+    xpath_patterns = [
+        f"//*[contains(text(), '{_FAILURE_RETRY_TEXT}')]",
+        f"//*[contains(., '{_FAILURE_RETRY_TEXT}')]",
+        f"//div[contains(text(), '{_FAILURE_RETRY_TEXT}')]",
+        f"//span[contains(text(), '{_FAILURE_RETRY_TEXT}')]",
+        f"//p[contains(text(), '{_FAILURE_RETRY_TEXT}')]",
+    ]
+    for xpath in xpath_patterns:
+        try:
+            elements = page.eles(xpath)
+            if elements:
+                return elements[0]
+        except Exception:
+            continue
+
+    selectors = [
+        ".errloading",
+        "[class*='errloading']",
+        "[id*='nc_1_refresh']",
+        "[class*='fail']",
+        "[class*='retry']",
+        "[class*='error']",
+        ".nc-lang-cnt",
+        ".btn_refresh",
+        "[class*='captcha']",
+        "[class*='verify']",
+        "[class*='tip']",
+        "[class*='message']",
+        "[class*='notice']",
+        "[class*='alert']",
+    ]
+    for selector in selectors:
+        try:
+            elements = page.eles(selector)
+            for element in elements:
+                text = str(getattr(element, "text", "") or "")
+                if _FAILURE_RETRY_TEXT in text:
+                    return element
+        except Exception:
+            continue
+
+    try:
+        js_result = page.run_js(r"""
+return (() => {
+    const walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT,
+        null,
+        false
+    );
+    const searchText = '""" + _FAILURE_RETRY_TEXT + r"""';
+    while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (node.textContent && node.textContent.includes(searchText)) {
+            let parent = node.parentElement;
+            while (parent && parent.tagName !== 'BODY') {
+                if (parent.onclick || parent.getAttribute('role') === 'button' ||
+                    parent.tagName === 'BUTTON' || parent.tagName === 'A' ||
+                    parent.style.cursor === 'pointer') {
+                    return parent.outerHTML.substring(0, 500);
+                }
+                parent = parent.parentElement;
+            }
+            return node.parentElement.outerHTML.substring(0, 500);
+        }
+    }
+    return null;
+})()
+""")
+        if js_result:
+            return page.ele(f"text={_FAILURE_RETRY_TEXT}")
+    except Exception:
+        pass
+
+    return None
+
+
+def _click_failure_retry_element(page: ChromiumPage) -> bool:
+    element = _find_failure_retry_element(page)
+    if not element:
+        return False
+    try:
+        element.click()
+        time.sleep(0.5)
+        return True
+    except Exception:
+        return False
+
+
 def _is_verification_gate_page(page: ChromiumPage) -> bool:
     url = str(getattr(page, "url", "") or "")
     title = str(getattr(page, "title", "") or "")
@@ -202,44 +335,59 @@ def _solve_slider_captcha(page: ChromiumPage, timeout_seconds: float = 30.0) -> 
 def _solve_slider_captcha_with_result(page: ChromiumPage, timeout_seconds: float = 30.0) -> tuple[bool, dict[str, object]]:
     diagnostic = _CaptchaSolverDiagnostic()
     ready_timeout = min(timeout_seconds, _SLIDER_READY_WAIT_SECONDS)
+    attempts = 0
+
     try:
         diagnostic.slider_detected = is_slider_captcha(page)
-        ready, waited_for_ready, ready_wait_ms = _wait_for_slider_distance_ready(page, ready_timeout)
-        diagnostic.waited_for_ready = waited_for_ready
-        diagnostic.ready_wait_ms = ready_wait_ms
-        if not ready:
-            diagnostic.result = "failed"
-            diagnostic.fail_reason = "distance_not_ready"
-            return False, diagnostic.as_dict()
 
-        distance = _get_slider_distance(page)
-        slider_button = page.ele(f"#{_SLIDER_BUTTON_ID}")
-        if not slider_button:
-            diagnostic.result = "failed"
-            diagnostic.fail_reason = "distance_not_ready"
-            return False, diagnostic.as_dict()
+        while attempts < _MAX_SLIDER_RETRIES:
+            attempts += 1
+            ready, waited_for_ready, ready_wait_ms = _wait_for_slider_distance_ready(page, ready_timeout)
+            diagnostic.waited_for_ready = waited_for_ready
+            diagnostic.ready_wait_ms = ready_wait_ms
+            if not ready:
+                diagnostic.result = "failed"
+                diagnostic.fail_reason = "distance_not_ready"
+                return False, diagnostic.as_dict()
 
-        trajectory = _generate_slider_trajectory(distance)
-        if not trajectory:
-            diagnostic.result = "failed"
-            diagnostic.fail_reason = "distance_not_ready"
-            return False, diagnostic.as_dict()
+            distance = _get_slider_distance(page)
+            slider_button = page.ele(f"#{_SLIDER_BUTTON_ID}")
+            if not slider_button:
+                diagnostic.result = "failed"
+                diagnostic.fail_reason = "distance_not_ready"
+                return False, diagnostic.as_dict()
 
-        diagnostic.solver_attempted = True
-        try:
-            _perform_slider_drag(page, slider_button, trajectory)
-        except Exception:
-            diagnostic.result = "failed"
-            diagnostic.fail_reason = "drag_failed"
-            return False, diagnostic.as_dict()
+            trajectory = _generate_slider_trajectory(distance)
+            if not trajectory:
+                diagnostic.result = "failed"
+                diagnostic.fail_reason = "distance_not_ready"
+                return False, diagnostic.as_dict()
 
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            time.sleep(1.0)
-            if not _is_verification_gate_page(page) and not is_slider_captcha(page):
-                diagnostic.result = "solved"
-                diagnostic.fail_reason = ""
-                return True, diagnostic.as_dict()
+            diagnostic.solver_attempted = True
+            try:
+                _perform_slider_drag(page, slider_button, trajectory)
+            except Exception:
+                diagnostic.result = "failed"
+                diagnostic.fail_reason = "drag_failed"
+                return False, diagnostic.as_dict()
+
+            deadline = time.monotonic() + min(timeout_seconds / _MAX_SLIDER_RETRIES, 10.0)
+            while time.monotonic() < deadline:
+                time.sleep(1.0)
+                if not _is_verification_gate_page(page) and not is_slider_captcha(page):
+                    diagnostic.result = "solved"
+                    diagnostic.fail_reason = ""
+                    return True, diagnostic.as_dict()
+
+            if attempts < _MAX_SLIDER_RETRIES:
+                if _click_retry_button(page):
+                    time.sleep(1.0)
+                    ready_timeout = _SLIDER_READY_WAIT_SECONDS
+                    continue
+                if _click_failure_retry_element(page):
+                    time.sleep(1.0)
+                    ready_timeout = _SLIDER_READY_WAIT_SECONDS
+                    continue
 
         diagnostic.result = "failed"
         diagnostic.fail_reason = "gate_not_cleared"
