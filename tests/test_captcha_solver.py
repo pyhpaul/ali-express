@@ -360,3 +360,121 @@ def test_solve_slider_captcha_waits_for_distance_before_dragging(monkeypatch):
     assert captcha_solver._solve_slider_captcha(page, timeout_seconds=1.0) is True
     assert state["dragged"] is True
     assert state["distance_calls"] >= 3
+
+
+def test_find_failure_retry_element_returns_element_when_text_matches():
+    class FakeElement:
+        def __init__(self, text):
+            self.text = text
+
+    class FakePageWithElements:
+        def __init__(self, elements):
+            self._elements = elements
+
+        def eles(self, selector):
+            if selector == "text=验证失败，点击框体重试":
+                return self._elements
+            return []
+
+    expected_element = FakeElement("验证失败，点击框体重试")
+    page = FakePageWithElements([expected_element])
+
+    result = captcha_solver._find_failure_retry_element(page)
+
+    assert result is expected_element
+
+
+def test_find_failure_retry_element_returns_none_when_no_match():
+    class FakePageWithElements:
+        def eles(self, selector):
+            return []
+
+    page = FakePageWithElements()
+
+    result = captcha_solver._find_failure_retry_element(page)
+
+    assert result is None
+
+
+def test_click_failure_retry_element_returns_true_on_success():
+    class FakeElement:
+        def __init__(self):
+            self.clicked = False
+
+        def click(self):
+            self.clicked = True
+
+    class FakePageWithElements:
+        def __init__(self, element):
+            self._element = element
+
+        def eles(self, selector):
+            if selector == "text=验证失败，点击框体重试":
+                return [self._element]
+            return []
+
+    expected_element = FakeElement()
+    page = FakePageWithElements(expected_element)
+
+    result = captcha_solver._click_failure_retry_element(page)
+
+    assert result is True
+    assert expected_element.clicked is True
+
+
+def test_click_failure_retry_element_returns_false_when_no_element():
+    class FakePageWithElements:
+        def eles(self, selector):
+            return []
+
+    page = FakePageWithElements()
+
+    result = captcha_solver._click_failure_retry_element(page)
+
+    assert result is False
+
+
+def test_solve_slider_captcha_tries_failure_retry_element_after_drag_fails(monkeypatch):
+    page = FakePage(
+        js_result=True,
+        url="https://www.aliexpress.com/verify?x5step=1",
+        title="验证码拦截",
+        button=object(),
+    )
+    state = {"ticks": 0, "dragged": False, "failure_retry_clicked": False, "cleared": False}
+
+    def fake_distance(page):
+        return 60
+
+    def fake_generate(distance):
+        return [{"x": distance, "y": 0, "delay": 0}]
+
+    def fake_drag(page, slider_button, trajectory):
+        state["dragged"] = True
+
+    def fake_click_retry_button(page):
+        return False
+
+    def fake_click_failure_retry_element(page):
+        state["failure_retry_clicked"] = True
+        return True
+
+    def fake_sleep(seconds):
+        state["ticks"] += 1
+        if state["failure_retry_clicked"] and not state["cleared"]:
+            page.url = "https://www.aliexpress.com/item/1.html"
+            page.title = "product"
+            state["cleared"] = True
+
+    monkeypatch.setattr(captcha_solver, "_get_slider_distance", fake_distance)
+    monkeypatch.setattr(captcha_solver, "_generate_slider_trajectory", fake_generate)
+    monkeypatch.setattr(captcha_solver, "_perform_slider_drag", fake_drag)
+    monkeypatch.setattr(captcha_solver, "_click_retry_button", fake_click_retry_button)
+    monkeypatch.setattr(captcha_solver, "_click_failure_retry_element", fake_click_failure_retry_element)
+    monkeypatch.setattr(captcha_solver, "is_slider_captcha", lambda page: False)
+    monkeypatch.setattr(captcha_solver.time, "monotonic", lambda: state["ticks"] * 0.1)
+    monkeypatch.setattr(captcha_solver.time, "sleep", fake_sleep)
+
+    assert captcha_solver._solve_slider_captcha(page, timeout_seconds=1.0) is True
+    assert state["dragged"] is True
+    assert state["failure_retry_clicked"] is True
