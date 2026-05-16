@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from ali_mvp import cli
-from ali_mvp.cli import build_output_dir, build_parser, run_llm_review, run_postprocess, run_resume, run_scrape
+from ali_mvp.cli import build_output_dir, build_parser, run_llm_review, run_page_probe, run_postprocess, run_resume, run_scrape
 from ali_mvp.filtering import FilterGroup
 
 
@@ -53,6 +53,27 @@ def test_scrape_parser_accepts_pages_option():
     args = parser.parse_args(["scrape", "--keyword", "women dress", "--pages", "3"])
 
     assert args.pages == 3
+
+
+def test_page_probe_parser_accepts_required_options():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "page-probe",
+            "--keyword",
+            "home appliance accessories",
+            "--pages",
+            "2",
+            "--per-page-raw-limit",
+            "3",
+        ]
+    )
+
+    assert args.command == "page-probe"
+    assert args.pages == 2
+    assert args.per_page_raw_limit == 3
+    assert args.output_dir == "data/page_probe"
+    assert args.func is run_page_probe
 
 
 def test_scrape_parser_accepts_enrich_detail_option():
@@ -888,6 +909,107 @@ def test_run_scrape_rejects_non_positive_pages():
 
     with pytest.raises(SystemExit, match="--pages must be greater than 0"):
         cli.run_scrape(args)
+
+
+def test_run_page_probe_rejects_non_positive_pages():
+    from ali_mvp import cli
+
+    args = argparse.Namespace(
+        keyword="women dress",
+        url=None,
+        category_url=None,
+        pages=0,
+        per_page_raw_limit=3,
+        output_dir="data/page_probe",
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        blacklist_file=None,
+        reject_keyword=[],
+        browser_hardening="minimal",
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
+        session_preflight="on",
+    )
+
+    with pytest.raises(SystemExit, match="--pages must be greater than 0"):
+        cli.run_page_probe(args)
+
+
+def test_run_page_probe_rejects_non_positive_per_page_raw_limit():
+    from ali_mvp import cli
+
+    args = argparse.Namespace(
+        keyword="women dress",
+        url=None,
+        category_url=None,
+        pages=2,
+        per_page_raw_limit=0,
+        output_dir="data/page_probe",
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        blacklist_file=None,
+        reject_keyword=[],
+        browser_hardening="minimal",
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
+        session_preflight="on",
+    )
+
+    with pytest.raises(SystemExit, match="--per-page-raw-limit must be greater than 0"):
+        cli.run_page_probe(args)
+
+
+def test_run_page_probe_builds_run_dir_and_delegates_to_runner(monkeypatch, tmp_path, capsys):
+    from ali_mvp import cli
+
+    fixed_now = datetime.fromisoformat("2026-05-13T15:00:00+00:00")
+    args = argparse.Namespace(
+        keyword="home appliance accessories",
+        url=None,
+        category_url=None,
+        pages=2,
+        per_page_raw_limit=3,
+        output_dir=str(tmp_path),
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        blacklist_file=None,
+        reject_keyword=[],
+        browser_hardening="minimal",
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
+        session_preflight="on",
+    )
+
+    class FakeDateTime:
+        @classmethod
+        def now(cls):
+            return fixed_now
+
+    seen: dict[str, object] = {}
+
+    def fake_run_page_probe(**kwargs):
+        seen.update(kwargs)
+        kwargs["run_dir"].mkdir(parents=True, exist_ok=True)
+        for name in ("products.csv", "products_filter_audit.csv", "products_review.csv", "category_rank.csv", "page_probe_summary.csv"):
+            (kwargs["run_dir"] / name).write_text("", encoding="utf-8")
+        return cli.scrape_runner.RunResult(exit_code=0, accepted_count=0, blocked=False)
+
+    monkeypatch.setattr(cli, "datetime", FakeDateTime)
+    monkeypatch.setattr(cli, "load_filter_groups", lambda path, keywords: [])
+    monkeypatch.setattr(cli.scrape_runner, "run_page_probe", fake_run_page_probe)
+
+    code = cli.run_page_probe(args)
+    output = capsys.readouterr().out
+
+    assert code == 0
+    assert seen["pages"] == 2
+    assert seen["per_page_raw_limit"] == 3
+    assert seen["source_type"] == "keyword"
+    assert seen["source_value"] == "home appliance accessories"
+    assert f"Wrote: {seen['run_dir'] / 'page_probe_summary.csv'}" in output
 
 
 def test_scrape_parser_rejects_removed_detail_rating_flags():

@@ -247,7 +247,7 @@ def _deserialize_identity_warning(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _deserialize_captcha_diagnostic(payload: dict[str, Any]) -> dict[str, Any]:
     diagnostic = payload.get("captcha_diagnostic")
-    if isinstance(diagnostic, dict):
+    if isinstance(diagnostic, Mapping):
         return dict(diagnostic)
     return {}
 

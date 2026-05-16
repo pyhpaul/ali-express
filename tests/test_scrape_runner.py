@@ -1364,6 +1364,92 @@ def test_run_new_scrape_checkpoints_across_multiple_pages(tmp_path, monkeypatch)
     assert summary["resume_recommended"] is False
 
 
+def test_run_page_probe_samples_each_page_and_continues_until_page_limit(tmp_path, monkeypatch):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+
+    class FakePage:
+        url = "https://www.aliexpress.com/wholesale?SearchText=women+dress"
+
+    pages = {
+        1: [
+            {"title": "Dress A1", "url": "https://www.aliexpress.com/item/1001.html", "resolvedProductUrl": "https://www.aliexpress.com/item/1001.html"},
+            {"title": "Dress A2", "url": "https://www.aliexpress.com/item/1002.html", "resolvedProductUrl": "https://www.aliexpress.com/item/1002.html"},
+            {"title": "Dress A3", "url": "https://www.aliexpress.com/item/1003.html", "resolvedProductUrl": "https://www.aliexpress.com/item/1003.html"},
+        ],
+        2: [
+            {"title": "Dress B1", "url": "https://www.aliexpress.com/item/2001.html", "resolvedProductUrl": "https://www.aliexpress.com/item/2001.html"},
+            {"title": "Dress B2", "url": "https://www.aliexpress.com/item/2002.html", "resolvedProductUrl": "https://www.aliexpress.com/item/2002.html"},
+            {"title": "Dress B3", "url": "https://www.aliexpress.com/item/2003.html", "resolvedProductUrl": "https://www.aliexpress.com/item/2003.html"},
+        ],
+    }
+    current_page = {"value": 1}
+    advanced: list[int] = []
+
+    def fake_collect(page):
+        return [dict(item) for item in pages[current_page["value"]]]
+
+    def fake_advance(page, target_page):
+        advanced.append(target_page)
+        current_page["value"] = target_page
+        return True
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(scrape_runner, "collect_listing_page_products", fake_collect)
+    monkeypatch.setattr(scrape_runner, "advance_listing_page", fake_advance)
+    monkeypatch.setattr(scrape_runner, "dedupe_listing_products", lambda products, seen_keys: products)
+    monkeypatch.setattr(
+        scrape_runner,
+        "prefilter_listing_products",
+        lambda raw_products, groups, source_type, source_value: (raw_products, []),
+    )
+    monkeypatch.setattr(scrape_runner, "normalize_products", lambda raw_products, *, source_type, source_value, scraped_at: [])
+    monkeypatch.setattr(scrape_runner, "filter_products", lambda normalized, groups: ([], []))
+
+    result = scrape_runner.run_page_probe(
+        source_type="keyword",
+        source_value="home appliance accessories",
+        url="https://example.test",
+        pages=2,
+        per_page_raw_limit=2,
+        run_dir=tmp_path,
+        user_data_dir=".browser-profile",
+        port=9333,
+        enrich_detail=False,
+        groups=[],
+        browser_hardening="minimal",
+        blacklist_file=None,
+        reject_keyword=[],
+        user_agent="",
+        accept_language="en-US,en;q=0.9",
+        session_preflight="off",
+    )
+
+    assert result == scrape_runner.RunResult(exit_code=2, accepted_count=0, blocked=False)
+    assert advanced == [2]
+
+    rows = read_csv_rows(tmp_path / "page_probe_summary.csv")
+    assert rows == [
+        {
+            "listing_page": "1",
+            "raw_seen": "3",
+            "raw_sampled": "2",
+            "normalized": "0",
+            "accepted": "0",
+            "blocked_reason": "",
+            "blocked_url": "",
+        },
+        {
+            "listing_page": "2",
+            "raw_seen": "3",
+            "raw_sampled": "2",
+            "normalized": "0",
+            "accepted": "0",
+            "blocked_reason": "",
+            "blocked_url": "",
+        },
+    ]
+
+
 def test_run_new_scrape_attaches_listing_context_before_detail_enrich(tmp_path, monkeypatch):
     scrape_runner = import_module("ali_mvp.scrape_runner")
 
@@ -2395,3 +2481,141 @@ def test_resume_scrape_stays_blocked_when_detail_queue_hits_captcha_again(tmp_pa
     assert resumed_state.pending_detail_queue == [dict(first, detailStatus="captcha_blocked"), second]
     assert resumed_state.accepted_products == []
     assert summary["resume_recommended"] is True
+    assert "captcha_diagnostic" not in summary
+
+
+def test_resume_scrape_details_only_preserves_existing_captcha_diagnostic_after_pending_detail_success(
+    tmp_path, monkeypatch
+):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunStateStore
+
+    manifest = _manifest(tmp_path, pages=1, enrich_detail=True)
+    existing_diagnostic = {
+        "stage": "preflight",
+        "page_url": manifest.url,
+        "solver": {"status": "solved"},
+    }
+    pending_product = {
+        "title": "Dress Resume Success",
+        "url": "https://www.aliexpress.com/item/3101.html",
+        "cardUrl": "https://www.aliexpress.com/item/3101.html",
+        "resolvedProductUrl": "https://www.aliexpress.com/item/3101.html",
+        "_listingBaseUrl": manifest.url,
+        "_listingPageUrl": manifest.url,
+        "_listingPageNumber": 1,
+    }
+    state = scrape_runner.RunState(
+        status="blocked",
+        current_listing_page=1,
+        raw_products_count=1,
+        normalized_count=0,
+        accepted_count=0,
+        seen_product_keys=[pending_product["resolvedProductUrl"]],
+        accepted_products=[],
+        audit_rows=[],
+        pending_detail_queue=[dict(pending_product)],
+        last_block_reason="captcha_blocked",
+        last_blocked_url=pending_product["resolvedProductUrl"],
+        captcha_diagnostic=dict(existing_diagnostic),
+    )
+    store = RunStateStore(tmp_path)
+    store.save_manifest(manifest)
+    store.save_state(state)
+    store.save_summary(state)
+
+    class FakePage:
+        url = manifest.url
+
+    def fake_detail(page, product):
+        product["detailStatus"] = "detail_enriched"
+        return "detail_enriched"
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(scrape_runner, "enrich_single_product_detail", fake_detail)
+
+    result = scrape_runner.resume_scrape(tmp_path, details_only=True)
+
+    resumed_state = store.load_state()
+    summary = store.load_summary()
+
+    assert result == scrape_runner.RunResult(exit_code=0, accepted_count=1, blocked=False)
+    assert resumed_state.status == "completed"
+    assert resumed_state.captcha_diagnostic == existing_diagnostic
+    assert summary["captcha_diagnostic"] == existing_diagnostic
+
+
+def test_resume_scrape_details_only_persists_latest_captcha_diagnostic_when_detail_queue_hits_captcha_again(
+    tmp_path, monkeypatch
+):
+    scrape_runner = import_module("ali_mvp.scrape_runner")
+    from ali_mvp.run_state import RunStateStore
+
+    manifest = _manifest(tmp_path, pages=1, enrich_detail=True)
+    existing_diagnostic = {
+        "stage": "preflight",
+        "page_url": manifest.url,
+        "solver": {"status": "solved"},
+    }
+    latest_diagnostic = {
+        "stage": "detail",
+        "page_url": "https://www.aliexpress.com/item/3201.html",
+        "solver": {"status": "blocked"},
+    }
+    first = {
+        "title": "Dress Resume Blocked",
+        "url": "https://www.aliexpress.com/item/3201.html",
+        "cardUrl": "https://www.aliexpress.com/item/3201.html",
+        "resolvedProductUrl": "https://www.aliexpress.com/item/3201.html",
+        "_listingBaseUrl": manifest.url,
+        "_listingPageUrl": manifest.url,
+        "_listingPageNumber": 1,
+    }
+    second = {
+        "title": "Dress Resume Later",
+        "url": "https://www.aliexpress.com/item/3202.html",
+        "cardUrl": "https://www.aliexpress.com/item/3202.html",
+        "resolvedProductUrl": "https://www.aliexpress.com/item/3202.html",
+        "_listingBaseUrl": manifest.url,
+        "_listingPageUrl": manifest.url,
+        "_listingPageNumber": 1,
+    }
+    state = scrape_runner.RunState(
+        status="blocked",
+        current_listing_page=1,
+        raw_products_count=2,
+        normalized_count=0,
+        accepted_count=0,
+        seen_product_keys=[first["resolvedProductUrl"], second["resolvedProductUrl"]],
+        accepted_products=[],
+        audit_rows=[],
+        pending_detail_queue=[dict(first), dict(second)],
+        last_block_reason="captcha_blocked",
+        last_blocked_url=first["resolvedProductUrl"],
+        captcha_diagnostic=dict(existing_diagnostic),
+    )
+    store = RunStateStore(tmp_path)
+    store.save_manifest(manifest)
+    store.save_state(state)
+    store.save_summary(state)
+
+    class FakePage:
+        url = manifest.url
+
+    def fake_detail(page, product):
+        product["_captchaDiagnostic"] = dict(latest_diagnostic)
+        product["detailStatus"] = "captcha_blocked"
+        return "captcha_blocked"
+
+    monkeypatch.setattr(scrape_runner, "open_listing_page", lambda *args, **kwargs: FakePage())
+    monkeypatch.setattr(scrape_runner, "enrich_single_product_detail", fake_detail)
+
+    result = scrape_runner.resume_scrape(tmp_path, details_only=True)
+
+    resumed_state = store.load_state()
+    summary = store.load_summary()
+
+    assert result == scrape_runner.RunResult(exit_code=3, accepted_count=0, blocked=True)
+    assert resumed_state.status == "blocked"
+    assert resumed_state.captcha_diagnostic == latest_diagnostic
+    assert summary["captcha_diagnostic"] == latest_diagnostic

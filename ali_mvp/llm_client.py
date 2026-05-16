@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -9,12 +11,31 @@ from urllib.request import Request, urlopen
 
 
 LLM_USER_AGENT = "ali_mvp/1.0"
+PROJECT_BASE_URL_ENV = "ALI_MVP_LLM_BASE_URL"
+PROJECT_API_KEY_ENV = "ALI_MVP_LLM_API_KEY"
+PROJECT_MODEL_ENV = "ALI_MVP_LLM_MODEL"
+PROJECT_PROFILE_ENV = "ALI_MVP_LLM_PROFILE"
+GENERIC_PROFILE_ENV = "LLM_PROFILE"
+PROFILES_PATH_ENV = "LLM_PROFILES_PATH"
+OPENAI_BASE_URL_ENV = "OPENAI_BASE_URL"
+OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+OPENAI_MODEL_ENV = "OPENAI_MODEL"
 
 
 @dataclass(frozen=True)
 class LlmConfig:
     base_url: str
     api_key: str
+    model: str
+    provider: str = "openai-compatible"
+
+
+@dataclass(frozen=True)
+class LlmProfile:
+    name: str
+    base_url: str
+    api_key: str
+    api_key_env: str
     model: str
     provider: str = "openai-compatible"
 
@@ -56,13 +77,37 @@ def resolve_llm_config(
     api_key: str,
     model: str,
     env_path: Path | None = None,
+    profiles_path: Path | None = None,
 ) -> LlmConfig:
     dotenv_path = env_path or _find_nearest_dotenv(run_dir)
     env_values = _read_dotenv(dotenv_path) if dotenv_path else {}
+    environ = os.environ
+    profile = _load_selected_profile(env_values, environ, dotenv_path=dotenv_path, profiles_path=profiles_path)
+    profile_api_key = _profile_api_key(profile, environ)
 
-    resolved_base_url = _normalize_base_url(base_url or env_values.get("ALI_MVP_LLM_BASE_URL", ""))
-    resolved_api_key = api_key or env_values.get("ALI_MVP_LLM_API_KEY", "")
-    resolved_model = model or env_values.get("ALI_MVP_LLM_MODEL", "")
+    resolved_base_url = _normalize_base_url(
+        _first_nonempty(
+            base_url,
+            env_values.get(PROJECT_BASE_URL_ENV, ""),
+            environ.get(PROJECT_BASE_URL_ENV, ""),
+            profile.base_url if profile else "",
+            environ.get(OPENAI_BASE_URL_ENV, ""),
+        )
+    )
+    resolved_api_key = _first_nonempty(
+        api_key,
+        env_values.get(PROJECT_API_KEY_ENV, ""),
+        environ.get(PROJECT_API_KEY_ENV, ""),
+        profile_api_key,
+        environ.get(OPENAI_API_KEY_ENV, ""),
+    )
+    resolved_model = _first_nonempty(
+        model,
+        env_values.get(PROJECT_MODEL_ENV, ""),
+        environ.get(PROJECT_MODEL_ENV, ""),
+        profile.model if profile else "",
+        environ.get(OPENAI_MODEL_ENV, ""),
+    )
 
     missing: list[str] = []
     if not resolved_base_url:
@@ -78,7 +123,112 @@ def resolve_llm_config(
         base_url=resolved_base_url,
         api_key=resolved_api_key,
         model=resolved_model,
+        provider=profile.provider if profile else "openai-compatible",
     )
+
+
+def _load_selected_profile(
+    env_values: dict[str, str],
+    environ: os._Environ[str],
+    *,
+    dotenv_path: Path | None,
+    profiles_path: Path | None,
+) -> LlmProfile | None:
+    profile_name = _first_nonempty(
+        env_values.get(PROJECT_PROFILE_ENV, ""),
+        environ.get(PROJECT_PROFILE_ENV, ""),
+        env_values.get(GENERIC_PROFILE_ENV, ""),
+        environ.get(GENERIC_PROFILE_ENV, ""),
+    )
+    if not profile_name:
+        return None
+
+    profile_path = _resolve_profiles_path(
+        profiles_path,
+        dotenv_value=env_values.get(PROFILES_PATH_ENV, ""),
+        environ_value=environ.get(PROFILES_PATH_ENV, ""),
+        dotenv_path=dotenv_path,
+    )
+    if profile_path is None:
+        raise ValueError(f"LLM profile '{profile_name}' selected but no profiles file was found")
+    return _read_profile(profile_name, profile_path)
+
+
+def _resolve_profiles_path(
+    explicit_path: Path | None,
+    *,
+    dotenv_value: str,
+    environ_value: str,
+    dotenv_path: Path | None,
+) -> Path | None:
+    if explicit_path is not None:
+        return explicit_path.expanduser()
+    if dotenv_value:
+        return _profile_path_from_text(dotenv_value, base_dir=dotenv_path.parent if dotenv_path else Path.cwd())
+    if environ_value:
+        return _profile_path_from_text(environ_value, base_dir=Path.cwd())
+    for candidate in _default_profile_paths():
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _default_profile_paths() -> list[Path]:
+    paths = [Path.home() / ".config" / "llm-profiles" / "profiles.toml"]
+    if os.name != "nt":
+        paths.append(Path("/etc/llm-profiles/profiles.toml"))
+    return paths
+
+
+def _profile_path_from_text(raw_path: str, *, base_dir: Path) -> Path:
+    path = Path(raw_path).expanduser()
+    if path.is_absolute():
+        return path
+    return base_dir / path
+
+
+def _read_profile(profile_name: str, profiles_path: Path) -> LlmProfile:
+    if not profiles_path.is_file():
+        raise ValueError(f"LLM profiles file does not exist: {profiles_path}")
+    raw = tomllib.loads(profiles_path.read_text(encoding="utf-8"))
+    profiles = raw.get("profiles")
+    if not isinstance(profiles, dict):
+        raise ValueError(f"LLM profiles file has no [profiles] table: {profiles_path}")
+    raw_profile = profiles.get(profile_name)
+    if not isinstance(raw_profile, dict):
+        raise ValueError(f"LLM profile '{profile_name}' not found in {profiles_path}")
+    return LlmProfile(
+        name=profile_name,
+        base_url=_string_value(raw_profile.get("base_url")),
+        api_key=_string_value(raw_profile.get("api_key")),
+        api_key_env=_string_value(raw_profile.get("api_key_env")),
+        model=_string_value(raw_profile.get("model")),
+        provider=_string_value(raw_profile.get("provider")) or "openai-compatible",
+    )
+
+
+def _profile_api_key(profile: LlmProfile | None, environ: os._Environ[str]) -> str:
+    if profile is None:
+        return ""
+    if profile.api_key:
+        return profile.api_key
+    if not profile.api_key_env:
+        return ""
+    return environ.get(profile.api_key_env, "")
+
+
+def _string_value(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _first_nonempty(*values: str) -> str:
+    for value in values:
+        text = value.strip()
+        if text:
+            return text
+    return ""
 
 
 def _normalize_base_url(raw_base_url: str) -> str:

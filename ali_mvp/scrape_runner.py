@@ -18,12 +18,20 @@ from .browser import (
 from .browser_identity import BrowserIdentityWarning, validate_browser_identity
 from .extractor import normalize_products
 from .filtering import FilterGroup, filter_products, load_filter_groups, prefilter_listing_products
-from .output import REVIEW_FIELDS, read_csv_rows, write_dict_csv, write_filter_audit_csv, write_products_csv, write_rank_csv
+from .output import (
+    REVIEW_FIELDS,
+    read_csv_rows,
+    write_dict_csv,
+    write_filter_audit_csv,
+    write_page_probe_summary_csv,
+    write_products_csv,
+    write_rank_csv,
+)
 from .proxy_pool import NoHealthyProxyError, ProxyPool
 from .review import build_review_rows
 from .run_state import RunManifest, RunState, RunStateStore
 from .scoring import ProductRecord, aggregate_rank, parse_count, parse_float
-from .session_guard import SessionPreflightOutcome
+from .session_guard import SessionPreflightResult
 from .session_guard import run_session_preflight
 
 
@@ -33,6 +41,17 @@ class RunResult:
     accepted_count: int
     blocked: bool = False
     blocked_proxy_key: str = field(default="", compare=False)
+
+
+@dataclass(frozen=True)
+class PageProbePageSummary:
+    listing_page: int
+    raw_seen: int
+    raw_sampled: int
+    normalized: int
+    accepted: int
+    blocked_reason: str = ""
+    blocked_url: str = ""
 
 
 def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir: Path) -> RunResult:
@@ -46,7 +65,6 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
         consecutive_captcha_count=existing_state.consecutive_captcha_count,
         last_session_ok_at=existing_state.last_session_ok_at,
         cooldown_until=existing_state.cooldown_until,
-        captcha_diagnostic=dict(existing_state.captcha_diagnostic),
     )
 
     if _is_session_cooldown_active(cooldown_until=existing_state.cooldown_until, now_iso=manifest.created_at):
@@ -97,7 +115,6 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
                 risk_level=preflight.risk_level,
                 now_iso=manifest.created_at,
             )
-        running_state = _with_captcha_diagnostic(running_state, _captcha_diagnostic_from_preflight(preflight))
         if preflight is not None and preflight.status != "ready":
             failed_state = replace(
                 running_state,
@@ -130,6 +147,152 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
         return result
     finally:
         proxy_pool.close()
+
+
+def run_page_probe(
+    *,
+    source_type: str,
+    source_value: str,
+    url: str,
+    pages: int,
+    per_page_raw_limit: int,
+    run_dir: Path,
+    user_data_dir: str,
+    port: int,
+    enrich_detail: bool,
+    groups: list[FilterGroup],
+    browser_hardening: str,
+    blacklist_file: str | None,
+    reject_keyword: list[str],
+    user_agent: str,
+    accept_language: str,
+    session_preflight: str,
+) -> RunResult:
+    page = open_listing_page(
+        url,
+        user_data_dir=user_data_dir,
+        port=port,
+        browser_hardening=browser_hardening,
+        user_agent=user_agent,
+        accept_language=accept_language,
+    )
+    accepted_products: list[ProductRecord] = []
+    audit_rows: list[dict[str, str]] = []
+    review_context_rows: list[dict[str, Any]] = []
+    page_summaries: list[PageProbePageSummary] = []
+    seen_keys: set[str] = set()
+    blocked = False
+    scraped_at = _utc_now_iso()
+    unlimited_manifest = RunManifest(
+        source_type=source_type,
+        source_value=source_value,
+        url=url,
+        max_items=10**9,
+        pages=pages,
+        output_dir=str(run_dir),
+        user_data_dir=user_data_dir,
+        port=port,
+        enrich_detail=enrich_detail,
+        blacklist_file=blacklist_file,
+        reject_keyword=list(reject_keyword),
+        browser_hardening=browser_hardening,
+        user_agent=user_agent,
+        accept_language=accept_language,
+        session_preflight=session_preflight,
+        created_at=scraped_at,
+    )
+
+    for current_page in range(1, pages + 1):
+        page_products = dedupe_listing_products(collect_listing_page_products(page), seen_keys)
+        raw_seen = len(page_products)
+        sampled_products = [dict(item) for item in page_products[:per_page_raw_limit]]
+        listing_survivors, listing_audit = prefilter_listing_products(
+            sampled_products,
+            groups,
+            source_type=source_type,
+            source_value=source_value,
+        )
+        audit_rows.extend(listing_audit)
+
+        blocked_reason = ""
+        blocked_url = ""
+        ready_to_normalize = listing_survivors
+        if enrich_detail and listing_survivors:
+            _attach_listing_context(
+                listing_survivors,
+                base_url=url,
+                page_url=str(getattr(page, "url", "") or url),
+                page_number=current_page,
+            )
+            ready_to_normalize, pending_detail_queue, blocked_reason, blocked_url = _enrich_listing_survivors(
+                page=page,
+                listing_survivors=listing_survivors,
+            )
+            blocked = bool(pending_detail_queue)
+
+        normalized = normalize_products(
+            ready_to_normalize,
+            source_type=source_type,
+            source_value=source_value,
+            scraped_at=scraped_at,
+        )
+        normalized = _merge_detail_context_into_records(normalized, ready_to_normalize)
+        review_context_rows = _merge_review_context_rows(
+            review_context_rows,
+            [asdict(product) for product in normalized],
+        )
+        accepted_before = len(accepted_products)
+        accepted_products, audit_rows = _apply_filtered_products(
+            manifest=unlimited_manifest,
+            groups=groups,
+            accepted_products=accepted_products,
+            audit_rows=audit_rows,
+            normalized=normalized,
+        )
+        page_summaries.append(
+            PageProbePageSummary(
+                listing_page=current_page,
+                raw_seen=raw_seen,
+                raw_sampled=len(sampled_products),
+                normalized=len(normalized),
+                accepted=len(accepted_products) - accepted_before,
+                blocked_reason=blocked_reason,
+                blocked_url=blocked_url,
+            )
+        )
+        if blocked:
+            break
+        if current_page >= pages:
+            break
+        if not advance_listing_page(page, current_page + 1):
+            break
+
+    _write_outputs(
+        run_dir,
+        accepted_products,
+        audit_rows,
+        review_context_rows=review_context_rows,
+    )
+    write_page_probe_summary_csv(
+        run_dir / "page_probe_summary.csv",
+        [
+            {
+                "listing_page": row.listing_page,
+                "raw_seen": row.raw_seen,
+                "raw_sampled": row.raw_sampled,
+                "normalized": row.normalized,
+                "accepted": row.accepted,
+                "blocked_reason": row.blocked_reason,
+                "blocked_url": row.blocked_url,
+            }
+            for row in page_summaries
+        ],
+    )
+    return RunResult(
+        exit_code=3 if blocked else _completed_exit_code(len(accepted_products)),
+        accepted_count=len(accepted_products),
+        blocked=blocked,
+    )
 
 
 def resume_scrape(
@@ -334,9 +497,9 @@ def _resume_pending_details(
                 pending_detail_queue=blocked_queue,
                 last_block_reason="captcha_blocked",
                 last_blocked_url=_product_url(raw_product),
-                captcha_diagnostic=_merge_captcha_diagnostic(
-                    state.captcha_diagnostic,
-                    _captcha_diagnostic_from_product(raw_product),
+                captcha_diagnostic=_blocked_captcha_diagnostic(
+                    existing=state.captcha_diagnostic,
+                    blocked_product=raw_product,
                 ),
             )
             return blocked_state, True, updated_review_context_rows
@@ -516,9 +679,9 @@ def _run_scrape_from_state(
                 block_events_on_current_proxy=proxy_pool.block_events_on_current,
                 last_block_reason=last_block_reason,
                 last_blocked_url=last_blocked_url,
-                captcha_diagnostic=_merge_captcha_diagnostic(
-                    state.captcha_diagnostic,
-                    _captcha_diagnostic_from_pending_queue(pending_detail_queue),
+                captcha_diagnostic=_blocked_captcha_diagnostic(
+                    existing=state.captcha_diagnostic,
+                    blocked_product=pending_detail_queue[0] if pending_detail_queue else None,
                 ),
             ),
         )
@@ -662,8 +825,16 @@ def _with_session_fields(existing: RunState, updated: RunState) -> RunState:
         last_session_ok_at=existing.last_session_ok_at,
         cooldown_until=existing.cooldown_until,
         identity_warning=dict(existing.identity_warning),
-        captcha_diagnostic=_merge_captcha_diagnostic(existing.captcha_diagnostic, updated.captcha_diagnostic),
+        captcha_diagnostic=dict(existing.captcha_diagnostic),
     )
+
+
+def _blocked_captcha_diagnostic(*, existing: dict[str, Any], blocked_product: dict[str, Any] | None) -> dict[str, Any]:
+    if blocked_product is not None:
+        diagnostic = blocked_product.get("_captchaDiagnostic")
+        if isinstance(diagnostic, dict):
+            return dict(diagnostic)
+    return dict(existing)
 
 
 def _collect_identity_warning(*, manifest: RunManifest, page: object) -> BrowserIdentityWarning | None:
@@ -690,43 +861,7 @@ def _with_identity_warning(state: RunState, warning: BrowserIdentityWarning | No
     )
 
 
-def _with_captcha_diagnostic(state: RunState, diagnostic: dict[str, Any] | None) -> RunState:
-    return replace(state, captcha_diagnostic=_merge_captcha_diagnostic(state.captcha_diagnostic, diagnostic))
-
-
-def _captcha_diagnostic_from_preflight(outcome: SessionPreflightOutcome | None) -> dict[str, Any]:
-    if outcome is None:
-        return {}
-    diagnostic = outcome.captcha_diagnostic
-    if isinstance(diagnostic, dict):
-        return dict(diagnostic)
-    return {}
-
-
-def _captcha_diagnostic_from_product(product: dict[str, Any]) -> dict[str, Any]:
-    diagnostic = product.get("_captchaDiagnostic")
-    if isinstance(diagnostic, dict):
-        return dict(diagnostic)
-    return {}
-
-
-def _captcha_diagnostic_from_pending_queue(pending_queue: list[dict[str, Any]]) -> dict[str, Any]:
-    for product in pending_queue:
-        diagnostic = _captcha_diagnostic_from_product(product)
-        if diagnostic:
-            return diagnostic
-    return {}
-
-
-def _merge_captcha_diagnostic(existing: dict[str, Any], new: dict[str, Any] | None) -> dict[str, Any]:
-    if isinstance(new, dict) and new:
-        return dict(new)
-    if existing:
-        return dict(existing)
-    return {}
-
-
-def _resolve_session_preflight(*, manifest: RunManifest, page: object) -> SessionPreflightOutcome | None:
+def _resolve_session_preflight(*, manifest: RunManifest, page: object) -> SessionPreflightResult | None:
     if manifest.session_preflight != "on":
         return None
     return run_session_preflight(page, search_url=manifest.url, warm_up=True)
