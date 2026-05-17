@@ -30,7 +30,7 @@ def load_v2rayn_source(root: Path) -> V2RayNSource:
     root = Path(root)
     db_path = root / "guiConfigs" / "guiNDB.db"
     base_config_path = root / "binConfigs" / "config.json"
-    xray_path = root / "bin" / "xray.exe"
+    xray_path = root / "bin" / "xray" / "xray.exe"
     asset_dir = root / "bin"
 
     conn = sqlite3.connect(db_path)

@@ -7,7 +7,7 @@ def test_load_v2rayn_source_reads_profile_item_order_and_ss_method(tmp_path):
     root = tmp_path / "v2rayN"
     db_path = root / "guiConfigs" / "guiNDB.db"
     config_path = root / "binConfigs" / "config.json"
-    xray_path = root / "bin" / "xray.exe"
+    xray_path = root / "bin" / "xray" / "xray.exe"
     db_path.parent.mkdir(parents=True)
     config_path.parent.mkdir(parents=True)
     xray_path.parent.mkdir(parents=True)
@@ -47,7 +47,7 @@ def test_load_v2rayn_source_skips_non_ss_rows(tmp_path):
     root = tmp_path / "v2rayN"
     db_path = root / "guiConfigs" / "guiNDB.db"
     config_path = root / "binConfigs" / "config.json"
-    xray_path = root / "bin" / "xray.exe"
+    xray_path = root / "bin" / "xray" / "xray.exe"
     db_path.parent.mkdir(parents=True)
     config_path.parent.mkdir(parents=True)
     xray_path.parent.mkdir(parents=True)
@@ -75,7 +75,7 @@ def test_load_v2rayn_source_skips_row_with_invalid_proto_extra_json(tmp_path):
     root = tmp_path / "v2rayN"
     db_path = root / "guiConfigs" / "guiNDB.db"
     config_path = root / "binConfigs" / "config.json"
-    xray_path = root / "bin" / "xray.exe"
+    xray_path = root / "bin" / "xray" / "xray.exe"
     db_path.parent.mkdir(parents=True)
     config_path.parent.mkdir(parents=True)
     xray_path.parent.mkdir(parents=True)
@@ -109,7 +109,7 @@ def test_load_v2rayn_source_skips_row_with_non_object_proto_extra(tmp_path):
     root = tmp_path / "v2rayN"
     db_path = root / "guiConfigs" / "guiNDB.db"
     config_path = root / "binConfigs" / "config.json"
-    xray_path = root / "bin" / "xray.exe"
+    xray_path = root / "bin" / "xray" / "xray.exe"
     db_path.parent.mkdir(parents=True)
     config_path.parent.mkdir(parents=True)
     xray_path.parent.mkdir(parents=True)
