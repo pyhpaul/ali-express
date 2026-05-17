@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from DrissionPage import ChromiumOptions, ChromiumPage
-from DrissionPage.errors import ContextLostError
+from DrissionPage.errors import ContextLostError, PageDisconnectedError
 
 
 _MISSING = object()
@@ -221,7 +221,7 @@ def collect_raw_products(
             _attach_listing_context(
                 current_products,
                 base_url=url,
-                page_url=str(getattr(page, "url", "") or url),
+                page_url=_safe_get_page_url(page) or url,
                 page_number=current_page,
             )
         all_products.extend(dedupe_listing_products(current_products, seen_urls))
@@ -643,18 +643,19 @@ return (() => {
 
 
 def _enrich_product_details(page: ChromiumPage, products: list[dict[str, object]]) -> None:
-    listing_url = str(getattr(page, "url", "") or "")
+    listing_url = _safe_get_page_url(page)
     for index, product in enumerate(products):
         status = enrich_single_product_detail(page, product)
         if status == "captcha_blocked":
             _mark_detail_status(products[index + 1 :], "detail_skipped_after_captcha")
             break
-    if listing_url and str(getattr(page, "url", "") or "") != listing_url:
+    current_url = _safe_get_page_url(page)
+    if listing_url and current_url and current_url != listing_url:
         page.get(listing_url)
 
 
 def enrich_single_product_detail(page: ChromiumPage, product: dict[str, object]) -> str:
-    listing_url = str(getattr(page, "url", "") or "")
+    listing_url = _safe_get_page_url(page)
     _prepare_listing_product(product)
     detail_url = str(product.get("resolvedProductUrl") or product.get("url") or "")
     if not detail_url:
@@ -748,13 +749,15 @@ def _wait_for_captcha_resolution(
 ) -> tuple[bool, dict[str, object] | None]:
     deadline = time.monotonic() + timeout_seconds
     solver_attempted = False
-    initial_page_url = str(getattr(page, "url", "") or "")
+    initial_page_url = _safe_get_page_url(page)
     diagnostic: dict[str, object] | None = None
     while True:
         now = time.monotonic()
         if now >= deadline:
             break
-        if not _is_captcha_page(str(getattr(page, "url", "")), str(getattr(page, "title", ""))):
+        current_url = _safe_get_page_url(page)
+        current_title = str(getattr(page, "title", "") or "")
+        if not _is_captcha_page(current_url, current_title):
             return True, diagnostic
         if not solver_attempted:
             solver_attempted = True
@@ -772,7 +775,9 @@ def _wait_for_captcha_resolution(
                 break
         time.sleep(interval_seconds)
         _wait_for_page_ready(page)
-    solved = not _is_captcha_page(str(getattr(page, "url", "")), str(getattr(page, "title", "")))
+    current_url = _safe_get_page_url(page)
+    current_title = str(getattr(page, "title", "") or "")
+    solved = not _is_captcha_page(current_url, current_title)
     return solved, diagnostic
 
 
@@ -835,7 +840,7 @@ def _restore_listing_context(page: ChromiumPage, product: dict[str, object], def
 
 
 def _open_detail_from_listing_context(page: ChromiumPage, product: dict[str, object]) -> bool:
-    before_url = str(getattr(page, "url", "") or "")
+    before_url = _safe_get_page_url(page)
     before_tabs = list(getattr(page, "tab_ids", []) or [])
     before_tab_id = str(getattr(page, "tab_id", "") or "")
     script = _detail_click_script(product)
@@ -843,7 +848,7 @@ def _open_detail_from_listing_context(page: ChromiumPage, product: dict[str, obj
     if clicked in {"clicked", "navigated"}:
         _wait_for_page_ready(page)
     if clicked in {"clicked", "navigated"} or clicked is _NAVIGATION_CONTEXT_LOST:
-        after_url = str(getattr(page, "url", "") or "")
+        after_url = _safe_get_page_url(page)
         if after_url and after_url != before_url and "/item/" in after_url:
             product["_detailUsedNewTab"] = False
             product["_detailTabId"] = before_tab_id
@@ -868,7 +873,7 @@ def _open_detail_from_listing_context(page: ChromiumPage, product: dict[str, obj
         return False
     page.get(direct_url)
     _wait_for_page_ready(page)
-    after_url = str(getattr(page, "url", "") or "")
+    after_url = _safe_get_page_url(page)
     if not after_url or "/item/" not in after_url:
         return False
     product["_detailUsedNewTab"] = False
@@ -897,6 +902,13 @@ def _wait_for_page_ready(page: ChromiumPage, timeout_seconds: float = 8.0) -> No
         time.sleep(0.2)
 
 
+def _safe_get_page_url(page: ChromiumPage) -> str:
+    try:
+        return str(getattr(page, "url", "") or "")
+    except (PageDisconnectedError, Exception):
+        return ""
+
+
 def _run_js_with_context_retry(
     page: ChromiumPage,
     script: str,
@@ -907,7 +919,7 @@ def _run_js_with_context_retry(
     for attempt in range(retries + 1):
         try:
             return page.run_js(script)
-        except ContextLostError:
+        except (ContextLostError, PageDisconnectedError):
             if attempt >= retries:
                 if default is _MISSING:
                     raise
