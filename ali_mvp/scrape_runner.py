@@ -88,6 +88,7 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
         _write_outputs(run_dir, [], [])
         return RunResult(exit_code=5, accepted_count=0)
 
+    page = None
     try:
         try:
             page = open_listing_page(
@@ -148,6 +149,11 @@ def run_new_scrape(*, manifest: RunManifest, groups: list[FilterGroup], run_dir:
         )
         return result
     finally:
+        if page is not None:
+            try:
+                page.quit()
+            except Exception:
+                pass
         proxy_pool.close()
 
 
